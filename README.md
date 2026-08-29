@@ -1,19 +1,42 @@
-# hermes-fleet-ctrl
+# hermes-fleet-ctrl — Hermes Fleet Commander
 
-A TUI control plane for a fleet of remote, **tmux-backed agent sessions over SSH**.
+A real-time **TUI + WebSocket/SSE control plane** for the fleet of **local
+tmux-backed Hermes Agent sessions** on this VPS. It replaces the ad-hoc SSH scripts
+and manual `tmux attach` inspection that were used to build/manage the dashboard,
+and is the permanent tool for monitoring, dispatching goals to, and auto-recovering
+the 7+ concurrent Hermes Agent sessions.
 
-It owns a pool of SSH hosts, drives their tmux sessions, classifies each agent's
-live terminal state, journals everything to an append-only SQLite store, schedules
-goals through a priority lease queue, safely injects instructions into panes, and
-runs a watchdog that auto-restarts wedged agents — but a **circuit breaker caps
-restarts to 3/hour/pane** so it never amplifies a failure into a restart loop.
+On this host the agents live as panes inside one tmux server:
+
+```
+socket: /home/ubuntu/.hermes/tmux/hermes-main.sock
+session: hermes-main
+  window 0      : the main hermes chat  (PROTECTED — never auto-touched)
+  window 1.0–1.5: worker-wrapper.sh agent-1 … agent-6 (the fleet)
+  window 2.0–2.2: scratch / reserve panes
+```
+
+## What it does
+
+- **Discovers** the live fleet by parsing `tmux list-panes` (zero config).
+- **Monitors** each pane: captures the screen, classifies state (Hermes-TUI aware),
+  and journals an append-only snapshot + audit trail to SQLite (WAL).
+- **Dispatches** goals to a worker pane via `tmux load-buffer -` + `paste-buffer`
+  (never `send-keys` / Ctrl-C), verified by a receipt token.
+- **Recovers** a wedged agent: the watchdog flags STUCK after inactivity and, when
+  enabled, gently nudges the pane — but a **circuit breaker caps nudges to 3/hour/
+  pane** so it never amplifies a failure into a nag loop. Each worker is already
+  supervised by `worker-wrapper.sh` (`while true; hermes chat; done`), so the
+  daemon's "recover" is a nudge, not a spawn/kill (which would fight the supervisor).
+- **Serves** a control plane: REST + WebSocket + SSE of live `FleetEvent`s, plus a
+  blessed TUI dashboard.
 
 ## Architecture
 
 ```
 ┌────────────┐   capture   ┌─────────────────┐  classify  ┌──────────────┐
-│ TmuxPool   │ ──────────► │ FleetControl    │ ─────────► │ ANSI parser  │
-│ (ssh2)     │            │ orchestrator    │            │ (state)     │
+│ LocalTmux  │ ──────────► │ FleetControl    │ ─────────► │ ANSI parser  │
+│ (tmux -S)  │            │ orchestrator    │            │ (Hermes-TUI) │
 └────────────┘            │                 │            └──────────────┘
         ▲                  │ ticks: snapshot │                  │
         │ load-buffer/     │ + guardian eval │                  ▼
@@ -22,81 +45,120 @@ restarts to 3/hour/pane** so it never amplifies a failure into a restart loop.
         ▲                  │                 │            │ (SQLite WAL) │
         │ enqueueGoal      │  TaskEngine     │            └──────────────┘
    TaskEngine  ───────────┘ (priority/lease) └──►  Guardian (STUCK + breaker)
+        │
+   discovery (list-panes → agents; window 0 protected)
 ```
 
 | Layer | File | Responsibility |
 |-------|------|----------------|
-| SSH + tmux driver | `src/driver/tmux-pool.ts` | pool of resilient ssh2 connections, tmux capture/parse, backoff reconnect |
-| ANSI normalizer + state machine | `src/parser/ansi-parser.ts` | strip CSI/OSC, classify pane → `IDLE / ACTIVE_THINKING / RUNNING_COMMAND / WAITING_USER_INPUT / ERROR_PROMPT` |
-| Append-only journal | `src/storage/db.ts` | 5 SQLite tables (sessions, tasks, snapshots, heartbeats, audit), WAL on-disk |
-| Priority task queue + lease allocator | `src/queue/task-engine.ts` | per-slot atomic leasing, dependency chains, timeouts, FIFO-tie priority |
-| Safe goal injector | `src/driver/goal-injector.ts` | writes goals via `tmux load-buffer -` + `paste-buffer` (never `send-keys`/Ctrl-C), verifies receipt |
-| Watchdog | `src/watchdog/guardian.ts` | STUCK detection + 3/hr/pane restart cap + circuit breaker |
-| Orchestrator | `src/server/fleet-control.ts` | wires all of the above; `tick()` + `pump()` + typed `FleetEvent`s |
-| Control-plane API | `src/server/control-plane.ts` | Fastify REST + WebSocket `/stream` of live events |
+| Local tmux driver | `src/driver/local-tmux.ts` | `tmux -S <sock>` via `execFile` (no shell); capture / load-buffer / paste-buffer |
+| Fleet discovery | `src/discovery.ts` | parse `list-panes`; map panes→agents; protect window 0 / listed panes |
+| ANSI normalizer + state machine | `src/parser/ansi-parser.ts` | strip CSI/OSC; classify → `IDLE / ACTIVE_THINKING / RUNNING_COMMAND / WAITING_USER_INPUT / ERROR_PROMPT`; Hermes-TUI aware |
+| Append-only journal | `src/storage/db.ts` | SQLite tables (sessions, tasks, snapshots, audit); WAL on-disk only |
+| Priority task queue + lease allocator | `src/queue/task-engine.ts` | per-slot atomic leasing, dependency chains, timeouts |
+| Safe goal injector | `src/driver/goal-injector.ts` | `load-buffer -` + `paste-buffer` (never `send-keys`/Ctrl-C), receipt-verified |
+| Watchdog | `src/watchdog/guardian.ts` | STUCK detection + 3/hr/pane nudge cap + circuit breaker |
+| Orchestrator | `src/server/fleet-control.ts` | wires all engines; `tick()` + `pump()` + typed `FleetEvent`s; protected-pane refusals |
+| Control-plane API | `src/server/control-plane.ts` | Fastify REST + WebSocket `/stream` + SSE `/stream/sse` |
+| Real-fleet assembly | `src/real-fleet.ts` | `bootRealFleet()` / `createRealControlPlane()` — the production path |
+| Daemon entry | `src/cli.ts` | boots the real control plane against hermes-main; safety banner; signal handling |
 | TUI | `src/tui/app.ts` | blessed dashboard; pure `renderLines()` model, headless-testable |
-| CLI assembly | `src/index.ts` | `bootFleet()` + `start()` (TUI when TTY, else server) |
-| E2E demo | `src/demo.ts` | mock-tmux scenario, no real SSH |
+| SSH driver (legacy/remote) | `src/driver/tmux-pool.ts` | pool of resilient ssh2 connections for remote fleets |
+| E2E demo | `src/demo.ts` | mock-tmux scenario, no real tmux |
 
-## Safety properties
+## Safety contract (the daemon is the permanent tool — this is the deal)
 
-- **Goals are injected, never keystroked.** `GoalInjector` uses `tmux
-  load-buffer -` (stdin) → `tmux paste-buffer -t <pane>`. No `send-keys`, no
-  Ctrl-C, no synthetic Enter. Receipt is verified by polling `capture-pane` for
-  an embedded unique token; it retries then fails loudly (`GoalInjectError`).
-- **Restart loops are bounded.** The Guardian trips a permanent circuit breaker
-  after 3 restarts in any rolling hour per pane. A live pane (real new output)
-  recovers the breaker; an operator can also reset it via the TUI (`r`) or
-  `fleet.guardian.resetBreaker(id)`.
-- **Nothing is mutated on disk except the journal.** The journal is strictly
-  append-only; snapshots are immutable history.
+- **Observation is read-only.** `tick()` only runs `capture-pane`. The daemon never
+  sends keystrokes, never kills panes, never respawns processes.
+- **Window 0 (main hermes) and any listed protected pane are NEVER auto-written.**
+  They are monitored and classified, but the watchdog refuses to nudge them, and
+  `POST /agents/:id/goal` for a protected pane returns `403`.
+- **Dispatch is operator-initiated and safe.** A goal goes to a worker pane via
+  load-buffer + paste-buffer, never raw keystrokes. Goals to protected panes are
+  rejected outright.
+- **Auto-recover is a nudge, off by default.** `FLEET_ALLOW_NUDGE=1` enables gentle
+  STUCK nudges (paste-buffer only); the 3/hr circuit breaker stops nag-spam. The
+  default is monitoring-only — the daemon records STUCK events and lets the existing
+  `worker-wrapper.sh` supervisor or a human decide.
+- **Nothing is mutated on disk except the journal** (strictly append-only).
 
-## Run it
+## Deploy it (this VPS)
 
 ```bash
+cd /home/ubuntu/projects/hermes-fleet-ctrl
 pnpm install
-pnpm run build        # tsc -p tsconfig.json
-pnpm run lint         # eslint (type-aware)
-pnpm run test         # vitest (60 tests, 10 files)
-pnpm run typecheck    # tsc --noEmit
+pnpm run build          # emits dist/cli.js
+pnpm run test           # 71 tests, 14 files
 ```
 
-Programmatic:
+Run the daemon (monitoring-only by default; binds to localhost):
 
-```ts
-import { bootFleet, start } from './src/index.js';
-
-const { fleet, close } = await start(
-  {
-    agents: [{ agentId: 'agent-1', host: 'agent-1', pane: '0.0' }],
-    hosts: [{ id: 'agent-1', host: '10.0.0.5', username: 'ubuntu', privateKey: '...' }],
-    stuckAfterMs: 10 * 60 * 1000, // 10 min idle => STUCK
-  },
-  { mode: 'server', port: 8787 }, // omit mode: attached TTY => blessed TUI
-);
+```bash
+pnpm run daemon         # = build && node dist/cli.js
+# or directly with env overrides:
+FLEET_PORT=8787 FLEET_ALLOW_NUDGE=0 node dist/cli.js
 ```
 
-- `mode: 'server'` (default when not a TTY) exposes:
-  - `GET /health`, `GET /agents`, `GET /agents/:id`
-  - `GET /tasks`, `POST /tasks` (enqueue a goal), `POST /agents/:id/goal` (inject now)
-  - `GET /journal/audit`, `WS /stream` (live `FleetEvent`s)
-- `mode: 'tui'` (auto when `stdout.isTTY`) shows the live dashboard; type
-  `agentId: <goal>` + Enter to dispatch, ↑/↓ to select, `r` to reset a breaker.
+As a persistent systemd **user** service (survives logout with `loginctl enable-linger`):
 
-Headless smoke test (no SSH): `pnpm exec vitest run src/demo.test.ts`.
+```bash
+mkdir -p ~/.config/systemd/user
+cp daemon/fleet-ctrl.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now fleet-ctrl
+journalctl --user -u fleet-ctrl -f
+```
 
-## Test invariants
+### Env (all optional)
 
-- `tmux-pool`: connection lifecycle, backoff reconnect, tmux parsing, capture.
-- `ansi-parser`: 30-fixture classification (>95% accurate), SGR/cursor stripping.
-- `storage/db`: all 5 tables, WAL on-disk only, >1000 appends/sec.
-- `task-engine`: priority + dependency gating, timeout reclaim, **no double-assignment
-  under 10-parallel / 7-slot leasing**, slot-cap refusal, journal integration.
-- `goal-injector`: exact byte transmission (mock tmux daemon), load-buffer+paste-buffer
-  only (no send-keys/C-c), token receipt, retry→`GoalInjectError`, `UNKNOWN_HOST`.
-- `guardian`: STUCK after threshold, restart+activity refresh, **3/hr cap then breaker**,
-  window roll, live-pane recovery.
-- `control-plane`: real Fastify server — classified states, task→pump→inject, immediate
-  inject, audit, WS fan-out, STUCK→breaker path.
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `FLEET_SOCKET` | `/home/ubuntu/.hermes/tmux/hermes-main.sock` | tmux socket |
+| `FLEET_PORT` | `8787` | HTTP/WS/SSE port |
+| `FLEET_HOST` | `127.0.0.1` | bind host (local only) |
+| `FLEET_JOURNAL` | `/home/ubuntu/.hermes/fleet-ctrl/journal.db` | SQLite path |
+| `FLEET_POLL_MS` | `5000` | poll interval |
+| `FLEET_STUCK_MS` | `600000` | idle ⇒ STUCK threshold (10 min) |
+| `FLEET_ALLOW_NUDGE` | `0` | `1` to enable safe STUCK nudges |
+| `FLEET_PROTECTED` | _(none)_ | extra comma-separated pane targets to protect |
+| `FLEET_AGENT_PATTERN` | `hermes` | regex to detect hermes panes in `list-panes` |
+
+## Control-plane API
+
+- `GET /health` → `{ ok, agents, tasks }`
+- `GET /agents` → `{ agents: AgentView[] }` (state, stuck, breakerOpen, restartsInWindow, protected)
+- `GET /agents/:id` → single agent view
+- `GET /tasks` → queued/leased tasks
+- `POST /tasks` `{ agentId, prompt, priority? }` → enqueue a goal (priority lease queue)
+- `POST /agents/:id/goal` `{ prompt }` → inject a goal now (403 if protected)
+- `GET /journal/audit?limit=` → recent audit rows
+- `WS /stream` → live `FleetEvent`s (snapshot / task / guardian / audit)
+- `GET /stream/sse` → same events as Server-Sent Events
+
+A `curl` example to dispatch a goal to agent-3:
+
+```bash
+curl -s -X POST localhost:8787/agents/agent-3/goal \
+  -H 'content-type: application/json' \
+  -d '{"prompt":"Summarize the open PRs in rag-service and report blockers."}'
+```
+
+## Test invariants (71 tests, 14 files)
+
+- `local-tmux`: real isolated tmux — capture, load-buffer+paste-buffer delivery,
+  **shell-injection-safe** argv (no `execFile` shell), `-S` socket isolation.
+- `discovery` (+ `.real` against the live hermes-main, read-only): pane parsing,
+  worker mapping, **window 0 protected**, worker panes dispatchable.
+- `ansi-parser`: 30-fixture classification (>95%), **Hermes-TUI awareness** (resting
+  agent = IDLE, not ERROR_PROMPT; real traceback still flags), SGR/cursor stripping.
+- `storage/db`: tables, WAL on-disk only.
+- `task-engine`: priority + dependency gating, timeout reclaim, no double-assignment
+  under 10-parallel / 7-slot leasing.
+- `goal-injector`: exact byte transmission, load-buffer+paste-buffer only, token
+  receipt, retry→`GoalInjectError`, `UNKNOWN_HOST`.
+- `guardian`: STUCK after threshold, 3/hr cap then breaker, live-pane recovery.
+- `fleet-control`: **protected-pane refusals** (inject returns ok:false, enqueue
+  throws), classified states, task→pump→inject, WS fan-out, STUCK→breaker path.
+- `control-plane`: real Fastify server incl. SSE, 403 for protected dispatch.
 - `tui`: render model, input parse, dispatch, selection/breaker reset, mount guard.
 - `demo`: full-stack scenario with mock tmux.

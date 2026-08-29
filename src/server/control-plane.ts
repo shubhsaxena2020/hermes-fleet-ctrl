@@ -43,15 +43,22 @@ export async function createControlPlane(
   await app.register(websocketPlugin);
 
   const subscribers = new Set<WsLike>();
+  const sseClients = new Set<(chunk: string) => void>();
 
   function broadcast(e: FleetEvent): void {
     const msg = JSON.stringify(e);
     for (const ws of subscribers) {
       try {
-        // ws.OPEN === 1; readyState is a number, send throws on a closed socket.
         if (ws.readyState === 1) ws.send(msg);
       } catch {
         /* drop dead sockets silently */
+      }
+    }
+    for (const send of sseClients) {
+      try {
+        send(`data: ${msg}\n\n`);
+      } catch {
+        /* drop dead streams silently */
       }
     }
   }
@@ -96,9 +103,13 @@ export async function createControlPlane(
       if (!prompt) return reply.code(400).send({ error: 'prompt is required' });
       try {
         const res = await fleet.injectGoal(req.params.id, prompt);
+        if (!res.ok) {
+          const protectedMsg = /protected/.test(res.error ?? '');
+          return reply.code(protectedMsg ? 403 : 404).send({ error: res.error ?? 'inject failed' });
+        }
         return reply.code(200).send(res);
       } catch (err) {
-        return reply.code(404).send({ error: err instanceof Error ? err.message : String(err) });
+        return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) });
       }
     },
   );
@@ -113,6 +124,26 @@ export async function createControlPlane(
     subscribers.add(socket);
     socket.on('close', () => subscribers.delete(socket));
     socket.on('error', () => subscribers.delete(socket));
+  });
+
+  // Server-Sent Events variant of /stream (no WebSocket upgrade needed).
+  app.get('/stream/sse', async (req, reply) => {
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    const send = (chunk: string) => {
+      try {
+        reply.raw.write(chunk);
+      } catch {
+        /* socket closed */
+      }
+    };
+    // Push the current snapshot immediately so a fresh client is not blank.
+    send(`data: ${JSON.stringify({ type: 'snapshot-batch', agents: fleet.agentViews(), tasks: fleet.engine.snapshot() })}\n\n`);
+    sseClients.add(send);
+    req.raw.on('close', () => sseClients.delete(send));
   });
 
   if (opts.pollIntervalMs && opts.pollIntervalMs > 0) {

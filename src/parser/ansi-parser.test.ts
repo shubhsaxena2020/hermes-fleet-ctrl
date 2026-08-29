@@ -211,3 +211,27 @@ describe('classifyPane — fixture classification accuracy', () => {
     }
   });
 });
+
+describe('classifyPane — Hermes Agent TUI awareness', () => {
+  const hermesTui = [
+    '  ┊ 💻 preparing terminal…',
+    ' ⚕ hy3 · 0% · 🗜️  4 · ⊙ goal 0/20 · 2h 1m · ⚠ YOLO',
+    '───────────────────────────────────────────────────────────────',
+    '⚕ PHASE B - Task queue & goal dispatch controller:',
+  ].join('\n');
+
+  it('labels a resting Hermes agent as IDLE, not ERROR_PROMPT, even if scrollback has the word "error"', () => {
+    const withErrorInHistory = hermesTui + '\n  some earlier line says error occurred';
+    expect(classifyPane(withErrorInHistory).state).toBe(AgentState.IDLE);
+  });
+
+  it('still flags a real Hermes error even when TUI chrome is present', () => {
+    const realError = hermesTui + '\ntraceback (most recent call last):\n  File "x.py", line 1';
+    expect(classifyPane(realError).state).toBe(AgentState.ERROR_PROMPT);
+  });
+
+  it('still flags RUNNING_COMMAND when a tool is executing under the TUI', () => {
+    const running = hermesTui + '\n⏵ running · pnpm run build';
+    expect(classifyPane(running).state).toBe(AgentState.RUNNING_COMMAND);
+  });
+});

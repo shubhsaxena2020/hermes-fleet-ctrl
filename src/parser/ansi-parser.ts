@@ -72,6 +72,23 @@ const THINKING_PATTERNS: RegExp[] = [
   /⠿/,
 ];
 
+/**
+ * The Hermes Agent TUI chrome. A live agent renders a footer like
+ *   "⚕ hy3 · 0% · 🗜️ 3 · ⊙ goal 0/20 · 2h 1m · ⚠ YOLO"
+ * followed by a status line. Presence of this chrome means the agent is at its
+ * resting command bar (ready to receive a goal) rather than crashed. We treat it
+ * as IDLE-equivalent for classification *when no stronger signal is present*, so
+ * a healthy agent is not mislabeled ERROR_PROMPT just because an earlier line in
+ * its scrollback contained the word "error".
+ */
+const HERMES_TUI_PATTERNS: RegExp[] = [
+  /⚕\s.*hy3/,
+  /⊙\s*goal/,
+  /🗜️/,
+  /msg=interrupt/,
+  /\/queue · \/bg · \/steer/,
+];
+
 /** Affordances that mean the agent is parked at an interactive prompt. */
 const WAIT_PATTERNS: RegExp[] = [
   /[?]/, // any question mark on the last line = interactive prompt (errors checked first)
@@ -103,6 +120,7 @@ export interface ClassificationSignals {
   hasSpinner: boolean;
   hasThinking: boolean;
   hasToolRunning: boolean;
+  hasHermesTui: boolean;
   trailingIdlePrompt: boolean;
   lastLine: string;
 }
@@ -141,16 +159,33 @@ function detectSignals(text: string): ClassificationSignals {
   const brailleSpinner = [...BRAILLE_SPINNERS].some((c) => text.includes(c));
   const asciiSpinner = text.split('\n').some((l) => ASCII_SPINNER_RE.test(l));
   const hasSpinner = brailleSpinner || asciiSpinner;
-  const hasError = ERROR_PATTERNS.some((re) => re.test(text));
   const hasThinking = THINKING_PATTERNS.some((re) => re.test(text));
   const hasToolRunning = TOOL_RUNNING_PATTERNS.some((re) => re.test(text));
+  const hasHermesTui = HERMES_TUI_PATTERNS.some((re) => re.test(text));
+
+  // Weak error words ("error", "failed", "cannot") are extremely common in agent
+  // scrollback and must NOT override the live Hermes TUI state. Only STRONG error
+  // signatures (traceback, exception, fatal, exit status, permission denied,
+  // command not found) count when the agent is at its resting command bar.
+  const STRONG_ERROR_PATTERNS: RegExp[] = [
+    /traceback \(most recent call last\)/i,
+    /\bexception\b/i,
+    /\bfatal\b/i,
+    /exit status [1-9]/i,
+    /permission denied/i,
+    /command not found/i,
+    /[✗×]/,
+  ];
+  const weakError = ERROR_PATTERNS.some((re) => re.test(text));
+  const strongError = STRONG_ERROR_PATTERNS.some((re) => re.test(text));
+  const hasError = strongError || (weakError && !hasHermesTui);
 
   const lines = text.split('\n').map((l) => l.trim());
   const lastLine = lines.filter((l) => l.length > 0).at(-1) ?? '';
   const hasWait = WAIT_PATTERNS.some((re) => re.test(lastLine));
   const trailingIdlePrompt = IDLE_PROMPT_PATTERNS.some((re) => re.test(lastLine));
 
-  return { hasError, hasWait, hasSpinner, hasThinking, hasToolRunning, trailingIdlePrompt, lastLine };
+  return { hasError, hasWait, hasSpinner, hasThinking, hasToolRunning, hasHermesTui, trailingIdlePrompt, lastLine };
 }
 
 /**
@@ -177,6 +212,10 @@ export function classifyPane(raw: string): PaneClassification {
   } else if (signals.hasSpinner || signals.hasThinking) {
     state = AgentState.ACTIVE_THINKING;
   } else if (signals.trailingIdlePrompt) {
+    state = AgentState.IDLE;
+  } else if (signals.hasHermesTui) {
+    // The Hermes command bar is visible but no work signal is present -> the
+    // agent is at its resting prompt, ready for a goal (not crashed).
     state = AgentState.IDLE;
   } else {
     // No clear activity; treat as idle (e.g., blank screen or finished output).

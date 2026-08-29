@@ -42,6 +42,17 @@ export interface FleetControlOptions {
   now?: () => number;
   /** Optional operator restart hook (defaults to a safe nudge re-inject). */
   restartAction?: (agentId: string) => void | Promise<void>;
+  /**
+   * When true, the default restart action pastes a gentle "continue" nudge into
+   * the pane via load-buffer + paste-buffer (never send-keys / kill). When false
+   * (the production default for this VPS), restarts are observed+audited only and
+   * the daemon never writes to a pane unless an operator dispatches a goal.
+   */
+  allowNudge?: boolean;
+  /** Text pasted on a STUCK nudge. */
+  nudgeText?: string;
+  /** Agent IDs that must never be nudged or have goals dispatched into them. */
+  protectedIds?: Set<string>;
 }
 
 export interface AgentView {
@@ -51,6 +62,8 @@ export interface AgentView {
   stuck: boolean;
   breakerOpen: boolean;
   restartsInWindow: number;
+  /** True if this pane is protected (never auto-nudged / never accepts dispatch). */
+  protected: boolean;
 }
 
 export type FleetEvent =
@@ -78,6 +91,7 @@ export class FleetControl extends EventEmitter {
   private readonly journal: EventJournal;
   private readonly agents: Map<string, AgentConfig>;
   private readonly opts: FleetControlOptions;
+  private readonly protectedIds: Set<string>;
   private readonly lastNormalized = new Map<string, string>();
   private readonly lastState = new Map<string, AgentState>();
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -93,6 +107,7 @@ export class FleetControl extends EventEmitter {
     this.journal = journal;
     this.agents = new Map(Object.entries(agents));
     this.opts = opts;
+    this.protectedIds = opts.protectedIds ?? new Set<string>();
     const now = opts.now ?? Date.now;
 
     this.injector = new GoalInjector(transport);
@@ -194,6 +209,9 @@ export class FleetControl extends EventEmitter {
 
   /** Enqueue a goal for an agent (becomes a prioritized, dependency-ordered task). */
   enqueueGoal(agentId: string, prompt: string, priority: PriorityLevel = 'NORMAL', taskId?: string): string {
+    if (this.protectedIds.has(agentId)) {
+      throw new Error(`agent ${agentId} is protected; dispatch is not allowed`);
+    }
     const id = taskId ?? `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     this.engine.enqueue({
       taskId: id,
@@ -209,27 +227,47 @@ export class FleetControl extends EventEmitter {
   /** Inject a goal into a pane immediately (bypasses the queue). */
   async injectGoal(agentId: string, prompt: string): Promise<DispatchResult> {
     const cfg = this.agents.get(agentId);
-    if (!cfg) throw new Error(`unknown agent: ${agentId}`);
+    if (!cfg) {
+      return { ok: false, target: agentId, transmitted: '', attempts: 0, error: `unknown agent: ${agentId}` };
+    }
+    if (this.protectedIds.has(agentId)) {
+      return { ok: false, target: agentId, transmitted: '', attempts: 0, error: `agent ${agentId} is protected; dispatch is not allowed` };
+    }
     this.journal.insertAudit({ actor: 'user', action: 'inject_goal', target: agentId, detail: prompt.slice(0, 80) });
     return this.injector.dispatchGoal(agentId, prompt, { target: cfg.pane });
   }
 
   private async handleRestart(agentId: string): Promise<void> {
-    this.journal.insertAudit({ actor: 'guardian', action: 'restart', target: agentId, detail: 'STUCK -> re-inject nudge' });
+    this.journal.insertAudit({ actor: 'guardian', action: 'restart', target: agentId, detail: 'STUCK detected' });
+    // A protected pane (window 0 / main session / operator-marked) is never
+    // auto-touched, even when STUCK. Observe + audit only.
+    if (this.protectedIds.has(agentId)) {
+      this.journal.insertAudit({ actor: 'guardian', action: 'restart-skipped', target: agentId, detail: 'protected pane' });
+      return;
+    }
     try {
       if (this.opts.restartAction) {
         await this.opts.restartAction(agentId);
-      } else {
+      } else if (this.opts.allowNudge) {
         const cfg = this.agents.get(agentId);
         if (cfg) {
-          await this.injector.dispatchGoal(agentId, 'Are you still there? Please continue the last task.', {
+          await this.injector.dispatchGoal(agentId, this.opts.nudgeText ?? 'Are you still there? Please continue the last task.', {
             target: cfg.pane,
           });
         }
+      } else {
+        // Monitoring-only mode: the daemon records the STUCK event and lets the
+        // operator (or the existing worker-wrapper.sh supervisor) decide. No write.
+        this.journal.insertAudit({ actor: 'guardian', action: 'restart-observed', target: agentId, detail: 'nudge disabled' });
       }
     } catch {
       /* restart is best-effort; swallow to avoid crashing the loop */
     }
+  }
+
+  /** True if an agent pane is protected (must never be nudged/dispatched into). */
+  isProtected(agentId: string): boolean {
+    return this.protectedIds.has(agentId);
   }
 
   /** Recent audit-log rows (newest first), for inspection / TUI. */
@@ -249,6 +287,7 @@ export class FleetControl extends EventEmitter {
       stuck: this.guardian.status(agentId) === 'STUCK',
       breakerOpen: this.guardian.status(agentId) === 'BREAKER_OPEN',
       restartsInWindow: this.guardian.restartCount(agentId),
+      protected: this.protectedIds.has(agentId),
     }));
   }
 

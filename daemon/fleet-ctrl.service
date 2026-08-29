@@ -1,0 +1,47 @@
+# Hermes Fleet Commander — systemd user service
+#
+# Install (as the `ubuntu` user, no root needed):
+#   mkdir -p ~/.config/systemd/user
+#   cp daemon/fleet-ctrl.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now fleet-ctrl
+#
+# Useful:
+#   systemctl --user status fleet-ctrl
+#   journalctl --user -u fleet-ctrl -f
+#   systemctl --user restart fleet-ctrl
+#
+# NOTE: this is a *user* service. For it to survive logout, run once:
+#   sudo loginctl enable-linger ubuntu
+
+[Unit]
+Description=Hermes Fleet Commander (fleet control-plane daemon)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hermes-fleet-ctrl
+# Build must already be present (dist/cli.js). Rebuild with: pnpm run build
+ExecStart=/usr/bin/env node %h/projects/hermes-fleet-ctrl/dist/cli.js
+Restart=on-failure
+RestartSec=5
+
+# Safety: the daemon is monitoring/dispatch only by default.
+# Set FLEET_ALLOW_NUDGE=1 to permit gentle STUCK nudges (paste-buffer only).
+Environment=FLEET_SOCKET=%h/.hermes/tmux/hermes-main.sock
+Environment=FLEET_PORT=8787
+Environment=FLEET_HOST=127.0.0.1
+Environment=FLEET_JOURNAL=%h/.hermes/fleet-ctrl/journal.db
+Environment=FLEET_POLL_MS=5000
+Environment=FLEET_STUCK_MS=600000
+Environment=FLEET_ALLOW_NUDGE=0
+
+# Hardening (defense in depth; the code is already read-only by design).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=%h/.hermes/fleet-ctrl
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
