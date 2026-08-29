@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateAlerts, DEFAULT_ALERT_RULES, type AlertInput } from './rules.js';
+import { evaluateAlerts, DEFAULT_ALERT_RULES, validateAlertRules, type AlertInput } from './rules.js';
 
 function make(over: Partial<AlertInput> = {}): AlertInput {
   return {
@@ -53,5 +53,54 @@ describe('alert rules as data (T9)', () => {
 
   it('default rule set is non-empty', () => {
     expect(DEFAULT_ALERT_RULES.length).toBeGreaterThan(0);
+  });
+
+  describe('alert rule schema validation (B8)', () => {
+    it('accepts the shipped DEFAULT_ALERT_RULES', () => {
+      const r = validateAlertRules(DEFAULT_ALERT_RULES);
+      expect(r.ok).toBe(true);
+      expect(r.errors).toHaveLength(0);
+    });
+
+    it('accepts a well-formed custom rule set', () => {
+      const r = validateAlertRules([
+        { id: 'x', severity: 'info', title: 'T', message: 'm {{agentId}}', when: () => false },
+      ]);
+      expect(r.ok).toBe(true);
+    });
+
+    it('rejects a non-array rule set', () => {
+      const r = validateAlertRules({ id: 'x' });
+      expect(r.ok).toBe(false);
+      expect(r.errors).toContain('alert rules must be an array');
+    });
+
+    it('rejects a rule with missing fields and an unknown severity', () => {
+      const r = validateAlertRules([
+        { id: '', severity: 'fatal', title: '', message: 5, when: 'nope' },
+      ]);
+      expect(r.ok).toBe(false);
+      expect(r.errors).toContain('rules[0].id must be a non-empty string');
+      expect(r.errors).toContain('rules[0].severity must be one of: info | warning | critical');
+      expect(r.errors).toContain('rules[0].title must be a non-empty string');
+      expect(r.errors).toContain('rules[0].message must be a string');
+      expect(r.errors).toContain('rules[0].when must be a function');
+    });
+
+    it('rejects a null element in the rule list', () => {
+      const r = validateAlertRules([null]);
+      expect(r.ok).toBe(false);
+      expect(r.errors).toContain('rules[0] must be an object');
+    });
+
+    it('collects every problem, not just the first', () => {
+      const r = validateAlertRules([
+        { id: '', severity: 'info', title: 't', message: 'm', when: () => true },
+        { id: 'ok', severity: 'warning', title: 'T', message: 'm', when: () => false },
+      ]);
+      expect(r.ok).toBe(false);
+      expect(r.errors).toContain('rules[0].id must be a non-empty string');
+      expect(r.errors.length).toBe(1); // only the one bad field
+    });
   });
 });
