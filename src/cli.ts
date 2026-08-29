@@ -131,8 +131,12 @@ async function main(): Promise<void> {
   process.on('SIGTERM', shutdown);
 }
 
-main().catch((err) => {
-  // eslint-disable-next-line no-console
-  console.error('Fleet commander failed to start:', err);
-  process.exit(1);
-});
+// Run only when executed directly (NodeNext ESM equivalent of require.main === module).
+const invokedDirectly = import.meta.url === `file://${process.argv[1]}`;
+if (invokedDirectly) {
+  main().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error('Fleet commander failed to start:', err);
+    process.exit(1);
+  });
+}
