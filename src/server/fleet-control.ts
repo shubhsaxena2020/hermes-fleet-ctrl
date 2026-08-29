@@ -188,8 +188,10 @@ export class FleetControl extends EventEmitter {
       if (action === 'restarted') {
         this.publish({ type: 'guardian', ts: now, agentId, action: 'restarted' });
       } else if (action === 'breaker_tripped') {
+        // The breaker transition (and its live broadcast) is emitted once by the
+        // Guardian's onTransition callback; here we only record it in the durable
+        // audit log so operator actions and breaker trips share one trail.
         this.journal.insertAudit({ actor: 'guardian', action: 'breaker_tripped', target: agentId, detail: 'restart budget exhausted' });
-        this.publish({ type: 'guardian', ts: now, agentId, action: 'breaker_tripped' });
       }
 
       this.publish({ type: 'snapshot', ts: now, agentId, state, normalized, changed });
