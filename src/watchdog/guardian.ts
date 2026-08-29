@@ -21,6 +21,16 @@
 
 export type PaneStatus = 'OK' | 'STUCK' | 'BREAKER_OPEN';
 
+/** A circuit-breaker state transition, surfaced so callers can make it durable. */
+export interface BreakerTransition {
+  agentId: string;
+  /** 'closed' = breaker not tripped; 'open' = tripped (pane unwatched/safe). */
+  from: 'closed' | 'open';
+  to: 'closed' | 'open';
+  reason: string;
+  at: number;
+}
+
 export interface GuardianOptions {
   /** Inactivity duration (ms) before a pane is considered STUCK. */
   stuckAfterMs: number;
@@ -32,6 +42,8 @@ export interface GuardianOptions {
   now?: () => number;
   /** Called when the Guardian decides a pane should be restarted. */
   restart?: (paneKey: string) => void | Promise<void>;
+  /** Called on every breaker state transition (open / auto-close / reset). */
+  onTransition?: (e: BreakerTransition) => void;
 }
 
 interface PaneState {
@@ -52,6 +64,7 @@ export class Guardian {
   private readonly now: () => number;
   private readonly restart: ((paneKey: string) => void | Promise<void>) | undefined;
   private readonly panes = new Map<string, PaneState>();
+  private readonly onTransition: ((e: BreakerTransition) => void) | undefined;
 
   constructor(opts: GuardianOptions) {
     if (opts.stuckAfterMs <= 0) throw new Error('stuckAfterMs must be > 0');
@@ -60,6 +73,12 @@ export class Guardian {
     this.windowMs = opts.windowMs ?? 60 * 60 * 1000;
     this.now = opts.now ?? Date.now;
     this.restart = opts.restart;
+    this.onTransition = opts.onTransition;
+  }
+
+  private emitTransition(agentId: string, to: 'closed' | 'open', reason: string): void {
+    if (!this.onTransition) return;
+    this.onTransition({ agentId, from: to === 'open' ? 'closed' : 'open', to, reason, at: this.now() });
   }
 
   /** Register (or re-register) a pane. Starts in OK with current time as activity. */
@@ -121,6 +140,7 @@ export class Guardian {
         p.breakerOpen = false;
         p.hadHeartbeatSinceTrip = false;
         p.lastActivity = this.now();
+        this.emitTransition(paneKey, 'closed', 'auto_close_window_drained_heartbeat');
         return 'OK';
       }
       return 'BREAKER_OPEN';
@@ -149,6 +169,7 @@ export class Guardian {
       p.breakerOpen = true;
       p.breakerTrippedAt = now;
       p.hadHeartbeatSinceTrip = false;
+      this.emitTransition(paneKey, 'open', 'restart_budget_exhausted');
       return 'breaker_tripped';
     }
 
@@ -169,11 +190,12 @@ export class Guardian {
   /** Manually clear a tripped breaker (operator intervention). */
   resetBreaker(paneKey: string): void {
     const p = this.panes.get(paneKey);
-    if (p) {
+    if (p && p.breakerOpen) {
       p.breakerOpen = false;
       p.hadHeartbeatSinceTrip = false;
       p.restarts = [];
       p.lastActivity = this.now();
+      this.emitTransition(paneKey, 'closed', 'operator_reset');
     }
   }
 }

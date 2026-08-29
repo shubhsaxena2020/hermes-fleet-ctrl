@@ -69,7 +69,7 @@ export interface AgentView {
 export type FleetEvent =
   | { type: 'snapshot'; ts: number; agentId: string; state: AgentState; normalized: string; changed: boolean }
   | { type: 'task'; ts: number; action: 'enqueue' | 'lease' | 'complete' | 'fail' | 'timeout'; taskId: string }
-  | { type: 'guardian'; ts: number; agentId: string; action: 'restarted' | 'breaker_tripped' }
+  | { type: 'guardian'; ts: number; agentId: string; action: 'restarted' | 'breaker_tripped' | 'breaker_autoclose' }
   | { type: 'audit'; ts: number; actor: string; action: string; detail: string };
 
 /** Goal string format stored on tasks: "agentId\tprompt". */
@@ -118,6 +118,22 @@ export class FleetControl extends EventEmitter {
       now,
       restart: (key) => {
         void this.handleRestart(key);
+      },
+      onTransition: (e) => {
+        // Make every breaker transition durable AND live-broadcast it.
+        this.journal.insertBreakerEvent({
+          agent_id: e.agentId,
+          pane_id: this.agents.get(e.agentId)?.pane ?? null,
+          kind: e.to === 'open' ? 'open' : 'auto_close',
+          reason: e.reason,
+          at: e.at,
+        });
+        this.publish({
+          type: 'guardian',
+          ts: e.at,
+          agentId: e.agentId,
+          action: e.to === 'open' ? 'breaker_tripped' : 'breaker_autoclose',
+        });
       },
     });
     this.engine = new TaskEngine({ slots: opts.slots ?? 7, now });
