@@ -222,8 +222,13 @@ export class TmuxPool {
     const parts = ['tmux', 'capture-pane', '-p', '-e', '-t', target];
     if (opts.start !== undefined) parts.push('-S', String(opts.start));
     if (opts.end !== undefined) parts.push('-E', String(opts.end));
-    const out = await this.exec(hostId, parts.join(' '));
+    const out = await this.runOnHost(hostId, parts.join(' '));
     return out.stdout;
+  }
+
+  /** Run an arbitrary tmux command on a host (used by the control-plane / diagnostics). */
+  async exec(hostId: string, command: string): Promise<ExecResult> {
+    return this.runOnHost(hostId, command);
   }
 
   /**
@@ -260,7 +265,7 @@ export class TmuxPool {
     return hc.waitReady().then(fn);
   }
 
-  private exec(hostId: string, command: string): Promise<ExecResult> {
+  private runOnHost(hostId: string, command: string): Promise<ExecResult> {
     return this.withConnection(hostId, (client) => this.runCommand(client, command));
   }
 

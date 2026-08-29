@@ -41,6 +41,8 @@ export interface Lease {
   slot: number;
   leasedAt: number;
   deadline: number | null;
+  /** Echo of the task's goal string (so the dispatcher can act without a second lookup). */
+  goal: string;
 }
 
 export interface TaskEngineOptions {
@@ -168,6 +170,7 @@ export class TaskEngine {
         slot,
         leasedAt,
         deadline: task.deadline ?? null,
+        goal: task.goal,
       };
       return lease;
     });

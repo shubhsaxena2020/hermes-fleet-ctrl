@@ -31,11 +31,13 @@
     "@types/blessed": "^0.1.25",
     "@types/node": "^20.14.0",
     "@types/ssh2": "^1.15.1",
+    "@types/ws": "^8.5.10",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^8.57.0",
     "prettier": "^3.3.0",
     "typescript": "^5.5.0",
-    "vitest": "^2.0.0"
+    "vitest": "^2.0.0",
+    "ws": "^8.18.0"
   }
 }
