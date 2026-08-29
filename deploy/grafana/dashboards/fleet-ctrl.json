@@ -1,0 +1,202 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "fleet-ctrl",
+    "title": "Hermes Fleet Commander — health & breakers",
+    "tags": ["fleet", "hermes", "watchdog"],
+    "timezone": "browser",
+    "schemaVersion": 39,
+    "refresh": "30s",
+    "time": { "from": "now-6h", "to": "now" },
+    "templating": {
+      "list": [
+        {
+          "name": "DS_INFINITY",
+          "type": "datasource",
+          "label": "Infinity datasource",
+          "query": "grafana-infinity-datasource",
+          "current": { "text": "fleet-infinity", "value": "fleet-infinity" }
+        },
+        {
+          "name": "agent",
+          "type": "query",
+          "label": "Agent",
+          "datasource": { "type": "grafana-infinity-datasource", "uid": "${DS_INFINITY}" },
+          "query": {
+            "refId": "agents",
+            "type": "json",
+            "source": "url",
+            "url": "http://localhost:8787/api/fleet",
+            "parser": "backend",
+            "root_selector": "agents",
+            "columns": [
+              { "selector": "agentId", "text": "agentId", "type": "string" }
+            ]
+          },
+          "refresh": 2,
+          "includeAll": true,
+          "multi": true,
+          "current": { "text": "All", "value": "$__all" }
+        }
+      ]
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "Fleet summary (total agents)",
+        "type": "stat",
+        "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+        "datasource": { "type": "grafana-infinity-datasource", "uid": "${DS_INFINITY}" },
+        "targets": [
+          {
+            "refId": "total",
+            "type": "json",
+            "source": "url",
+            "url": "http://localhost:8787/api/fleet",
+            "parser": "backend",
+            "root_selector": "",
+            "columns": [
+              { "selector": "total", "text": "agents", "type": "number" }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Agents by status",
+        "type": "stat",
+        "gridPos": { "h": 6, "w": 16, "x": 8, "y": 0 },
+        "datasource": { "type": "grafana-infinity-datasource", "uid": "${DS_INFINITY}" },
+        "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+        "targets": [
+          {
+            "refId": "byStatus",
+            "type": "json",
+            "source": "url",
+            "url": "http://localhost:8787/api/fleet",
+            "parser": "backend",
+            "root_selector": "byStatus",
+            "columns": [
+              { "selector": "ok", "text": "ok", "type": "number" },
+              { "selector": "stuck", "text": "stuck", "type": "number" },
+              { "selector": "breakerOpen", "text": "breakerOpen", "type": "number" },
+              { "selector": "protected", "text": "protected", "type": "number" }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Heartbeat age (ms) — staleness",
+        "type": "timeseries",
+        "gridPos": { "h": 7, "w": 12, "x": 0, "y": 6 },
+        "datasource": { "type": "grafana-infinity-datasource", "uid": "${DS_INFINITY}" },
+        "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "lineWidth": 2 } } },
+        "targets": [
+          {
+            "refId": "hb",
+            "type": "json",
+            "source": "url",
+            "url": "http://localhost:8787/api/agents/${agent}/history?limit=120",
+            "parser": "backend",
+            "root_selector": "history",
+            "columns": [
+              { "selector": "captured_at", "text": "Time", "type": "timestamp" },
+              { "selector": "heartbeat_age_ms", "text": "heartbeat_age_ms", "type": "number" }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Restart count in window (circuit-breaker budget)",
+        "type": "timeseries",
+        "gridPos": { "h": 7, "w": 12, "x": 12, "y": 6 },
+        "datasource": { "type": "grafana-infinity-datasource", "uid": "${DS_INFINITY}" },
+        "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2 }, "thresholds": { "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 2 }, { "color": "red", "value": 3 } ] } } },
+        "targets": [
+          {
+            "refId": "rc",
+            "type": "json",
+            "source": "url",
+            "url": "http://localhost:8787/api/agents/${agent}/history?limit=120",
+            "parser": "backend",
+            "root_selector": "history",
+            "columns": [
+              { "selector": "captured_at", "text": "Time", "type": "timestamp" },
+              { "selector": "restart_count", "text": "restart_count", "type": "number" }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Task queue depth",
+        "type": "timeseries",
+        "gridPos": { "h": 7, "w": 12, "x": 0, "y": 13 },
+        "datasource": { "type": "grafana-infinity-datasource", "uid": "${DS_INFINITY}" },
+        "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2 } } },
+        "targets": [
+          {
+            "refId": "qd",
+            "type": "json",
+            "source": "url",
+            "url": "http://localhost:8787/api/agents/${agent}/history?limit=120",
+            "parser": "backend",
+            "root_selector": "history",
+            "columns": [
+              { "selector": "captured_at", "text": "Time", "type": "timestamp" },
+              { "selector": "queue_depth", "text": "queue_depth", "type": "number" }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Poll latency (ms)",
+        "type": "timeseries",
+        "gridPos": { "h": 7, "w": 12, "x": 12, "y": 13 },
+        "datasource": { "type": "grafana-infinity-datasource", "uid": "${DS_INFINITY}" },
+        "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "lineWidth": 2 } } },
+        "targets": [
+          {
+            "refId": "pl",
+            "type": "json",
+            "source": "url",
+            "url": "http://localhost:8787/api/agents/${agent}/history?limit=120",
+            "parser": "backend",
+            "root_selector": "history",
+            "columns": [
+              { "selector": "captured_at", "text": "Time", "type": "timestamp" },
+              { "selector": "poll_latency_ms", "text": "poll_latency_ms", "type": "number" }
+            ]
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Breaker events (open / auto-close)",
+        "type": "table",
+        "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+        "datasource": { "type": "grafana-infinity-datasource", "uid": "${DS_INFINITY}" },
+        "targets": [
+          {
+            "refId": "be",
+            "type": "json",
+            "source": "url",
+            "url": "http://localhost:8787/api/events?limit=100",
+            "parser": "backend",
+            "root_selector": "events",
+            "columns": [
+              { "selector": "at", "text": "at", "type": "timestamp" },
+              { "selector": "agent_id", "text": "agent_id", "type": "string" },
+              { "selector": "kind", "text": "kind", "type": "string" },
+              { "selector": "reason", "text": "reason", "type": "string" }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "overwrite": true
+}

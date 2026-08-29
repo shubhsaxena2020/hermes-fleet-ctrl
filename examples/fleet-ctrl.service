@@ -1,0 +1,33 @@
+# Hermes Fleet Commander — systemd user service (example)
+#
+# Copy to ~/.config/systemd/user/fleet-ctrl.service, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now fleet-ctrl
+# Survive logout: sudo loginctl enable-linger ubuntu
+#
+# This example pulls config from an EnvironmentFile rather than inline vars;
+# point EnvironmentFile at examples/fleet-env.example (or your own).
+
+[Unit]
+Description=Hermes Fleet Commander (fleet control-plane daemon)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/hermes-fleet-ctrl
+# Build must already be present (dist/cli.js). Rebuild with: pnpm run build
+ExecStart=/usr/bin/env node %h/projects/hermes-fleet-ctrl/dist/cli.js
+EnvironmentFile=%h/projects/hermes-fleet-ctrl/examples/fleet-env.example
+Restart=on-failure
+RestartSec=5
+
+# Safety: the daemon is monitoring/dispatch only by default.
+# Set FLEET_ALLOW_NUDGE=1 in the env file to permit gentle STUCK nudges.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=%h/.hermes/fleet-ctrl
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
