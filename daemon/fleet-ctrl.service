@@ -35,6 +35,11 @@ Environment=FLEET_JOURNAL=%h/.hermes/fleet-ctrl/journal.db
 Environment=FLEET_POLL_MS=5000
 Environment=FLEET_STUCK_MS=600000
 Environment=FLEET_ALLOW_NUDGE=0
+# Circuit-breaker knobs (optional overrides):
+#   FLEET_MAX_RESTARTS      nudge budget per rolling window (default 3)
+#   FLEET_RESTART_WINDOW_MS rolling window / auto-close drain window (default 3600000 = 1h)
+# Environment=FLEET_MAX_RESTARTS=3
+# Environment=FLEET_RESTART_WINDOW_MS=3600000
 
 # Hardening (defense in depth; the code is already read-only by design).
 NoNewPrivileges=true
