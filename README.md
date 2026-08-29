@@ -28,6 +28,19 @@ session: hermes-main
   pane** so it never amplifies a failure into a nag loop. Each worker is already
   supervised by `worker-wrapper.sh` (`while true; hermes chat; done`), so the
   daemon's "recover" is a nudge, not a spawn/kill (which would fight the supervisor).
+
+### Circuit breaker auto-close rule
+
+When the per-pane restart budget (3 per rolling hour) is exhausted, the breaker
+**opens** and the pane is declared unwatched (still captured/monitored, just never
+re-nudged). It **auto-closes only when BOTH** hold: (1) the rolling restart window
+has fully drained (no restart timestamps remain inside the window), **and** (2) a
+fresh activity heartbeat has arrived since the trip, proving the pane is actually
+alive. Until then the pane stays unwatched but is never re-nudged — so a wedged agent
+cannot be hammer-looped and a silent pane is not falsely cleared. The open/closed
+transition is written to the durable breaker-event journal and is reconstructable
+after a process restart (replay the journal). A human can also clear it explicitly
+(`r` in the TUI, or an operator reset).
 - **Serves** a control plane: REST + WebSocket + SSE of live `FleetEvent`s, plus a
   blessed TUI dashboard.
 
@@ -88,7 +101,7 @@ session: hermes-main
 cd /home/ubuntu/projects/hermes-fleet-ctrl
 pnpm install
 pnpm run build          # emits dist/cli.js
-pnpm run test           # 71 tests, 14 files
+pnpm run test           # 125 tests, 20 files
 ```
 
 Run the daemon (monitoring-only by default; binds to localhost):
@@ -123,6 +136,20 @@ journalctl --user -u fleet-ctrl -f
 | `FLEET_PROTECTED` | _(none)_ | extra comma-separated pane targets to protect |
 | `FLEET_AGENT_PATTERN` | `hermes` | regex to detect hermes panes in `list-panes` |
 
+**Circuit-breaker knobs** (validated by the config schema, T12 — see `src/config/schema.ts`):
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `stuckAfterMs` | `600000` (env `FLEET_STUCK_MS`) | idle ⇒ STUCK threshold (ms) |
+| `maxRestartsPerWindow` | `3` | nudge budget per rolling window (breaker opens when exhausted) |
+| `restartWindowMs` | `3600000` (1h) | rolling window for the restart budget; also the auto-close drain window |
+| `pollIntervalMs` | `2000` | fleet poll loop interval (ms) |
+| `slots` | `7` | goal-dispatch concurrency slots |
+
+`restartWindowMs` doubles as the breaker **auto-close** drain window: the breaker only
+re-closes once this window has fully drained AND a fresh heartbeat has arrived (see the
+auto-close rule above). Invalid config fails fast at startup with the exact offending field.
+
 ## Control-plane API
 
 - `GET /health` → `{ ok, agents, tasks }`
@@ -134,6 +161,12 @@ journalctl --user -u fleet-ctrl -f
 - `GET /journal/audit?limit=` → recent audit rows
 - `WS /stream` → live `FleetEvent`s (snapshot / task / guardian / audit)
 - `GET /stream/sse` → same events as Server-Sent Events
+- `GET /api/fleet` → stable summary `{ ok, generatedAt, total, byStatus, agents[] }` (T7)
+- `GET /api/agents/:id` → per-agent detail (state, breakerState, history depth) (T7)
+- `GET /api/agents/:id/history?limit=` → bounded metrics-history samples (trendlines) (T6)
+- `GET /api/events?limit=&agent=` → durable breaker open/close/auto-close events (T4/T5)
+- `GET /api/event-log?limit=&agent=&type=` → structured operator audit log (T14)
+- `GET /api/event-log/export.ndjson?limit=&agent=&type=` → sanitized NDJSON export (attachment) (T14)
 
 A `curl` example to dispatch a goal to agent-3:
 
@@ -143,7 +176,7 @@ curl -s -X POST localhost:8787/agents/agent-3/goal \
   -d '{"prompt":"Summarize the open PRs in rag-service and report blockers."}'
 ```
 
-## Test invariants (71 tests, 14 files)
+## Test invariants (125 tests, 20 files)
 
 - `local-tmux`: real isolated tmux — capture, load-buffer+paste-buffer delivery,
   **shell-injection-safe** argv (no `execFile` shell), `-S` socket isolation.
@@ -156,9 +189,16 @@ curl -s -X POST localhost:8787/agents/agent-3/goal \
   under 10-parallel / 7-slot leasing.
 - `goal-injector`: exact byte transmission, load-buffer+paste-buffer only, token
   receipt, retry→`GoalInjectError`, `UNKNOWN_HOST`.
-- `guardian`: STUCK after threshold, 3/hr cap then breaker, live-pane recovery.
+- `guardian`: STUCK after threshold, 3/hr cap then breaker, live-pane recovery,
+  **breaker auto-close only after window drain + fresh heartbeat** (issue #1).
 - `fleet-control`: **protected-pane refusals** (inject returns ok:false, enqueue
-  throws), classified states, task→pump→inject, WS fan-out, STUCK→breaker path.
-- `control-plane`: real Fastify server incl. SSE, 403 for protected dispatch.
-- `tui`: render model, input parse, dispatch, selection/breaker reset, mount guard.
+  throws), classified states, task→pump→inject, WS fan-out, STUCK→breaker path,
+  **no duplicate `breaker_tripped` broadcast**.
+- `control-plane`: real Fastify server incl. SSE, 403 for protected dispatch,
+  `/api/fleet` + `/api/agents/:id/history` + `/api/events` + `/api/event-log` filters.
+- `tui`: render model, input parse, dispatch, selection/breaker reset, mount guard,
+  **grouped live/stale/breaker/protected sections + heartbeat-age suffix**.
 - `demo`: full-stack scenario with mock tmux.
+- `test/mock-fleet.integration`: deterministic mock-fleet harness covering normal
+  operation, missed-heartbeat→breaker, auto-close, restart recovery, history replay.
+- `test/smoke`: UI/API/event-feed count consistency + no-stale-entries-after-restart.
