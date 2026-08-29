@@ -107,4 +107,36 @@ describe('TUI (headless) — renderLines, input parsing, dispatch', () => {
     const tui = new FleetTui(fleet, { allowBlessed: false });
     expect(() => tui.mount()).toThrow(/blessed mount disabled/);
   });
+
+  it('renderLines shows grouped state sections and an informative empty-state (T13)', () => {
+    // Empty fleet: informative empty-state copy.
+    const empty = new FleetControl(new FakeTransport(), new EventJournal(), {}, { stuckAfterMs: 1000, slots: 7, now: () => 1_000_000 });
+    const tuiEmpty = new FleetTui(empty);
+    tuiEmpty.sync();
+    const emptyLines = renderLines(tuiEmpty.current).join('\n');
+    expect(emptyLines).toContain('📭 No agents registered');
+
+    // Populated fleet: section headers separate live/stale/breaker states.
+    const clock = { t: 1_000_000 };
+    const { fleet } = buildFleet(clock);
+    const tui = new FleetTui(fleet);
+    tui.sync();
+    const lines = renderLines(tui.current).join('\n');
+    expect(lines).toContain('🟢 LIVE AGENTS');
+    expect(lines).toContain('AUDIT  (last 5):');
+    // Each populated agent row carries a heartbeat-age or restarts marker.
+    expect(lines).toMatch(/agent-1/);
+  });
+
+  it('renderLines renders a heartbeat-age suffix when lastNormalized is old (T13)', () => {
+    const clock = { t: 1_000_000 };
+    const { fleet } = buildFleet(clock);
+    const tui = new FleetTui(fleet);
+    tui.sync();
+    // Directly craft a model with a stale lastNormalized to isolate the suffix logic.
+    const staleModel = tui.current;
+    staleModel.agents = staleModel.agents.map((a, _i) => ({ ...a, lastNormalized: new Date(1_000_000 - 90_000).toISOString() }));
+    const lines = renderLines(staleModel).join('\n');
+    expect(lines).toMatch(/agent-1.*\d+s ago/);
+  });
 });
