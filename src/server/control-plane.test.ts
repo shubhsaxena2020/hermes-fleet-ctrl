@@ -339,3 +339,53 @@ describe('Control-plane — defined REST status API (T7)', () => {
     expect(alerts.some((a) => a.agentId === 'agent-1' && a.ruleId === 'breaker-open' && a.severity === 'critical')).toBe(true);
   });
 });
+
+describe('Control-plane — structured event log (T14)', () => {
+  let app3: FastifyInstance;
+  let base3: string;
+
+  beforeAll(async () => {
+    app3 = await createControlPlane(fleet, { pollIntervalMs: 0 });
+    await app3.listen({ port: 0, host: '127.0.0.1' });
+    const addr = app3.server.address() as AddressInfo;
+    base3 = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterAll(async () => {
+    await app3.close();
+  });
+
+  it('GET /api/event-log returns filtered audit rows by agent', async () => {
+    const res = await fetch(`${base3}/api/event-log?agent=agent-1&limit=50`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { eventLog: Array<{ target: string | null; actor: string }> };
+    expect(body.eventLog.length).toBeGreaterThan(0);
+    expect(body.eventLog.every((r) => r.target === 'agent-1' || r.actor === 'agent-1')).toBe(true);
+  });
+
+  it('GET /api/event-log returns filtered audit rows by type', async () => {
+    const res = await fetch(`${base3}/api/event-log?type=enqueue_goal&limit=50`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { eventLog: Array<{ action: string }> };
+    expect(body.eventLog.length).toBeGreaterThan(0);
+    expect(body.eventLog.every((r) => r.action === 'enqueue_goal')).toBe(true);
+  });
+
+  it('GET /api/event-log/export.ndjson returns sanitized NDJSON', async () => {
+    const res = await fetch(`${base3}/api/event-log/export.ndjson?limit=50`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('x-ndjson');
+    const text = await res.text();
+    const lines = text.split('\n').filter((l) => l.length > 0);
+    expect(lines.length).toBeGreaterThan(0);
+    const parsed = lines.map((l) => JSON.parse(l) as { ts: number; actor: string; action: string });
+    expect(parsed.every((o) => typeof o.ts === 'number' && typeof o.actor === 'string' && typeof o.action === 'string')).toBe(true);
+  });
+
+  it('GET /api/event-log filters can be combined', async () => {
+    const res = await fetch(`${base3}/api/event-log?agent=agent-1&type=enqueue_goal&limit=50`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { eventLog: Array<{ target: string; action: string }> };
+    expect(body.eventLog.every((r) => r.target === 'agent-1' && r.action === 'enqueue_goal')).toBe(true);
+  });
+});

@@ -323,12 +323,38 @@ export class FleetControl extends EventEmitter {
     return this.protectedIds.has(agentId);
   }
 
-  /** Recent audit-log rows (newest first), for inspection / TUI. */
-  recentAudit(limit = 50): Array<{ ts: number; actor: string; action: string; target: string | null; detail: string | null }> {
+  /** Recent audit-log rows (newest first), for inspection / TUI / export. */
+  recentAudit(
+    limit = 50,
+    filter: { agent?: string | undefined; type?: string | undefined } = {},
+  ): Array<{ ts: number; actor: string; action: string; target: string | null; detail: string | null }> {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (filter.agent != null && filter.agent.length > 0) {
+      clauses.push('(target = ? OR actor = ?)');
+      params.push(filter.agent, filter.agent);
+    }
+    if (filter.type != null && filter.type.length > 0) {
+      clauses.push('action = ?');
+      params.push(filter.type);
+    }
+    const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
+    params.push(Math.min(Math.max(limit, 1), 500));
     const rows = this.journal.raw
-      .prepare(`SELECT ts, actor, action, target, detail FROM audit_log ORDER BY id DESC LIMIT ?`)
-      .all(limit) as Array<{ ts: number; actor: string; action: string; target: string | null; detail: string | null }>;
+      .prepare(`SELECT ts, actor, action, target, detail FROM audit_log${where} ORDER BY id DESC LIMIT ?`)
+      .all(...params) as Array<{ ts: number; actor: string; action: string; target: string | null; detail: string | null }>;
     return rows;
+  }
+
+  /**
+   * Render the recent audit log as sanitized NDJSON for operator export (T14).
+   * Each line is a stable JSON object with no internal-only fields leaked.
+   */
+  exportAuditLog(limit = 50, filter: { agent?: string | undefined; type?: string | undefined } = {}): string {
+    const rows = this.recentAudit(limit, filter);
+    return rows
+      .map((r) => JSON.stringify({ ts: r.ts, actor: r.actor, action: r.action, target: r.target, detail: r.detail ?? null }))
+      .join('\n');
   }
 
   /** Current per-agent view (state, stuck, breaker, durable breaker state). */

@@ -1,18 +1,13 @@
 /**
  * TUI control-plane dashboard for the agent fleet.
  *
- * A live, keyboard-driven view of every agent's state, the task queue, the audit
- * trail, and circuit-breaker status — plus an input line to dispatch goals to a
- * selected agent. Built on `blessed` for the real terminal, but the entire model
- * and rendering are pure and TTY-free so they can be unit-tested headlessly.
+ * A live, keyboard-driven view of every agent's state, the task queue, the audit trail, and circuit-breaker status — plus an input line to dispatch goals to a selected agent. Built on `blessed` for the real terminal, but the entire model and rendering are pure and TTY-free so they can be unit-tested headlessly.
  *
  * Usage:
  *   const tui = new FleetTui(fleet);
  *   tui.mount();           // attaches a blessed screen and starts the live loop
  *
- * The blessed layer is intentionally thin: all state lives in `TuiModel`, and
- * `renderLines(model)` produces the exact text the screen shows. Tests exercise
- * the model + renderLines + input parsing without spawning a terminal.
+ * The blessed layer is intentionally thin: all state lives in `TuiModel`, and `renderLines(model)` produces the exact text the screen shows. Tests exercise the model + renderLines + input parsing without spawning a terminal.
  */
 
 import * as blessed from 'blessed';
@@ -60,25 +55,52 @@ export function renderLines(model: TuiModel): string[] {
   lines.push('HERMES FLEET CONTROL  —  agents: ' + model.agents.length + '   tasks: ' + model.tasks.length);
   lines.push('─'.repeat(60));
   if (model.agents.length === 0) {
-    lines.push('(no agents registered)');
+    lines.push('📭 No agents registered. Configure hosts in config.json or via environment.');
+  } else {
+    // Walk agents in original order to preserve selection markers and add visual separation
+    let lastGroup: 'live' | 'stale' | 'breaker' | 'protected' | null = null;
+    model.agents.forEach((a, i) => {
+      const isStale = a.stuck && !(a.breakerOpen || a.breakerState === 'open');
+      const isBreaker = a.breakerOpen || a.breakerState === 'open';
+      const isProtected = a.protected && !(a.breakerOpen || a.breakerState === 'open');
+      const group: 'live' | 'stale' | 'breaker' | 'protected' =
+        isBreaker ? 'breaker' :
+        isProtected ? 'protected' :
+        isStale ? 'stale' :
+        'live';
+
+      // Insert a section header when the group changes
+      if (group !== lastGroup) {
+        switch (group) {
+          case 'live': lines.push('🟢 LIVE AGENTS'); break;
+          case 'stale': lines.push('🟡 STALE AGENTS (no new output)'); break;
+          case 'breaker': lines.push('🔴 BREAKER OPEN (unwatched)'); break;
+          case 'protected': lines.push('⚪ PROTECTED AGENTS'); break;
+        }
+        lines.push('');
+        lastGroup = group;
+      }
+
+      const sel = i === model.selected ? '▶' : ' ';
+      const glyph = STATE_GLYPH[a.state] ?? '?';
+      const lastTs = a.lastNormalized ? Date.parse(a.lastNormalized) : 0;
+      const heartbeatAge = lastTs > 0 ? Math.max(0, Date.now() - lastTs) : 0;
+      const hbStr = heartbeatAge > 5000 ? ` (${Math.round(heartbeatAge / 1000)}s ago)` : '';
+      lines.push(`${sel} ${i}. ${a.agentId}  ${glyph} ${a.state}${hbStr}  (restarts ${a.restartsInWindow})`);
+    });
   }
-  model.agents.forEach((a, i) => {
-    const sel = i === model.selected ? '▶' : ' ';
-    const glyph = STATE_GLYPH[a.state] ?? '?';
-    const flags = [a.stuck ? 'STUCK' : '', a.breakerOpen ? 'BREAKER' : ''].filter(Boolean).join(' ');
-    const flagStr = flags ? ` [${flags}]` : '';
-    lines.push(`${sel} ${i}. ${a.agentId}  ${glyph} ${a.state}${flagStr}  (restarts ${a.restartsInWindow})`);
-  });
   lines.push('─'.repeat(60));
   lines.push('TASKS  (top 8):');
   model.tasks.slice(0, 8).forEach((t) => {
-    lines.push(`  ${t.state.padEnd(9)} ${t.priority.padEnd(8)} ${t.taskId}${t.leasedTo !== undefined ? ` @slot${t.leasedTo}` : ''}`);
+    const priorityIcon = t.priority === 'CRITICAL' ? '🔴' : t.priority === 'HIGH' ? '🟠' : t.priority === 'NORMAL' ? '🟡' : '⚪';
+    lines.push(`  ${priorityIcon} ${t.state.padEnd(9)} ${t.priority.padEnd(8)} ${t.taskId}${t.leasedTo !== undefined ? ` @slot${t.leasedTo}` : ''}`);
   });
   lines.push('─'.repeat(60));
-  lines.push('AUDIT  (last 3):');
-  model.audit.slice(0, 3).forEach((r) => {
-    const detail = (r.detail ?? '').slice(0, 40);
-    lines.push(`  ${r.actor}:${r.action} ${detail}`);
+  lines.push('AUDIT  (last 5):');
+  model.audit.slice(0, 5).forEach((r) => {
+    const time = new Date((r as { ts?: number }).ts || Date.now()).toLocaleTimeString();
+    const detail = (r.detail ?? '').slice(0, 50);
+    lines.push(`  [${time}] ${r.actor}:${r.action} ${detail}`);
   });
   lines.push('─'.repeat(60));
   lines.push('> ' + model.input + '_');

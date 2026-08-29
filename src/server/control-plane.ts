@@ -118,6 +118,23 @@ export async function createControlPlane(
     return { events: fleet.recentBreakerEvents(req.query.agent, limit) };
   });
 
+  /** Structured event log for operator actions (restarts, breaker resets, etc.). */
+  app.get<{ Querystring: { limit?: string; agent?: string; type?: string } }>('/api/event-log', (req) => {
+    const limit = Math.min(Number.parseInt(req.query.limit ?? '50', 10) || 50, 500);
+    const filter = { agent: req.query.agent, type: req.query.type };
+    return { eventLog: fleet.recentAudit(limit, filter) };
+  });
+
+  /** Sanitized NDJSON export of the structured event log (T14). */
+  app.get<{ Querystring: { limit?: string; agent?: string; type?: string } }>('/api/event-log/export.ndjson', (req, reply) => {
+    const limit = Math.min(Number.parseInt(req.query.limit ?? '50', 10) || 50, 500);
+    const filter = { agent: req.query.agent, type: req.query.type };
+    const ndjson = fleet.exportAuditLog(limit, filter);
+    reply.header('content-type', 'application/x-ndjson');
+    reply.header('content-disposition', 'attachment; filename="event-log.ndjson"');
+    return ndjson;
+  });
+
   app.get<{ Params: { id: string } }>('/agents/:id', (req, reply) => {
     const view = fleet.agentViews().find((a) => a.agentId === req.params.id);
     if (!view) return reply.code(404).send({ error: 'unknown agent', agentId: req.params.id });
