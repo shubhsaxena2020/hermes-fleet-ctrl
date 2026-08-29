@@ -226,6 +226,17 @@ export class TmuxPool {
     return out.stdout;
   }
 
+  /**
+   * Run an arbitrary tmux command that reads its payload from stdin
+   * (e.g. `tmux load-buffer -`). Returns combined stdout. Used by the goal
+   * injector for safe, exact payload transmission.
+   */
+  async execWithStdin(hostId: string, command: string, input: string): Promise<ExecResult> {
+    const hc = this.hosts.get(hostId);
+    if (!hc) return Promise.reject(new Error(`unknown host: ${hostId}`));
+    return hc.waitReady().then((client) => this.runCommand(client, command, input));
+  }
+
   /** Disconnect a single host (or all if hostId omitted) and stop reconnecting. */
   disconnect(hostId?: string): void {
     if (hostId === undefined) {
@@ -253,7 +264,7 @@ export class TmuxPool {
     return this.withConnection(hostId, (client) => this.runCommand(client, command));
   }
 
-  private runCommand(client: Client, command: string): Promise<ExecResult> {
+  private runCommand(client: Client, command: string, input?: string): Promise<ExecResult> {
     return new Promise<ExecResult>((resolve, reject) => {
       let settled = false;
       const timer =
@@ -295,6 +306,10 @@ export class TmuxPool {
             }
           }
         });
+        // If the command reads from stdin (e.g. `tmux load-buffer -`), pipe it.
+        if (input !== undefined) {
+          stream.end(Buffer.from(input, 'utf8'));
+        }
       });
     });
   }

@@ -55,6 +55,20 @@ export interface ExecResult {
   stderr: string;
 }
 
+/**
+ * Minimal transport the goal injector needs. Implemented by `TmuxPool` over SSH,
+ * but swappable in tests for a faithful in-process mock tmux daemon so we can
+ * assert exact command transmission without a real host.
+ */
+export interface TmuxTransport {
+  /** Run a tmux command; resolve with combined stdout (code 0). */
+  exec(hostId: string, command: string): Promise<ExecResult>;
+  /** Run a tmux command that reads its payload from stdin (e.g. load-buffer -). */
+  execWithStdin(hostId: string, command: string, input: string): Promise<ExecResult>;
+  /** Capture the current screen content of a pane (used for receipt verify). */
+  capturePane(hostId: string, target: string, opts?: { start?: number; end?: number }): Promise<string>;
+}
+
 /** Injectable scheduler used for reconnect backoff (testable without real timers). */
 export type DelayFn = (ms: number) => Promise<void>;
 
