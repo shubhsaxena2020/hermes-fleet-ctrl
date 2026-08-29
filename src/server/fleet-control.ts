@@ -24,6 +24,7 @@ import { EventJournal, type PriorityLevel } from '../storage/db.js';
 import { TaskEngine } from '../queue/task-engine.js';
 import { GoalInjector, type DispatchResult } from '../driver/goal-injector.js';
 import { Guardian } from '../watchdog/guardian.js';
+import { evaluateAlerts } from '../alerting/rules.js';
 import type { TmuxTransport } from '../driver/types.js';
 
 export interface AgentConfig {
@@ -72,6 +73,7 @@ export type FleetEvent =
   | { type: 'snapshot'; ts: number; agentId: string; state: AgentState; normalized: string; changed: boolean }
   | { type: 'task'; ts: number; action: 'enqueue' | 'lease' | 'complete' | 'fail' | 'timeout'; taskId: string }
   | { type: 'guardian'; ts: number; agentId: string; action: 'restarted' | 'breaker_tripped' | 'breaker_autoclose' }
+  | { type: 'alert'; ts: number; agentId: string; severity: 'info' | 'warning' | 'critical'; ruleId: string; message: string }
   | { type: 'audit'; ts: number; actor: string; action: string; detail: string };
 
 /** Goal string format stored on tasks: "agentId\tprompt". */
@@ -203,6 +205,23 @@ export class FleetControl extends EventEmitter {
         restart_count: this.guardian.restartCount(agentId),
         poll_latency_ms: 0,
       });
+
+      // Evaluate the data-driven alert policy (T9) against this agent snapshot and
+      // publish every firing rule as a live alert event. Pure + inspectable; the
+      // policy lives in src/alerting/rules.ts, not here.
+      const alerts = evaluateAlerts({
+        agentId,
+        state,
+        stuck: this.guardian.status(agentId) === 'STUCK',
+        breakerOpen: this.guardian.status(agentId) === 'BREAKER_OPEN',
+        breakerState: this.journal.reconstructBreakerState(agentId),
+        restartsInWindow: this.guardian.restartCount(agentId),
+        protected: this.protectedIds.has(agentId),
+        heartbeatAgeMs: Math.max(0, now - lastHb),
+      });
+      for (const a of alerts) {
+        this.publish({ type: 'alert', ts: now, agentId, severity: a.severity, ruleId: a.ruleId, message: a.message });
+      }
     }
   }
 
