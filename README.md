@@ -178,7 +178,7 @@ curl -s -X POST localhost:8787/agents/agent-3/goal \
   -d '{"prompt":"Summarize the open PRs in rag-service and report blockers."}'
 ```
 
-## Test invariants (125 tests, 20 files)
+## Test invariants (151 tests, 25 files)
 
 - `local-tmux`: real isolated tmux — capture, load-buffer+paste-buffer delivery,
   **shell-injection-safe** argv (no `execFile` shell), `-S` socket isolation.
@@ -187,19 +187,31 @@ curl -s -X POST localhost:8787/agents/agent-3/goal \
 - `ansi-parser`: 30-fixture classification (>95%), **Hermes-TUI awareness** (resting
   agent = IDLE, not ERROR_PROMPT; real traceback still flags), SGR/cursor stripping.
 - `storage/db`: tables, WAL on-disk only.
+- `storage/metrics-persistence` (**new, B7**): metrics + breaker/audit events
+  survive a close/reopen cycle on a real on-disk SQLite file (WAL durability).
 - `task-engine`: priority + dependency gating, timeout reclaim, no double-assignment
   under 10-parallel / 7-slot leasing.
 - `goal-injector`: exact byte transmission, load-buffer+paste-buffer only, token
   receipt, retry→`GoalInjectError`, `UNKNOWN_HOST`.
 - `guardian`: STUCK after threshold, 3/hr cap then breaker, live-pane recovery,
   **breaker auto-close only after window drain + fresh heartbeat** (issue #1).
+- `guardian-knobs` (**new, B5/B6**): the `FLEET_MAX_RESTARTS` /
+  `FLEET_RESTART_WINDOW_MS` knobs actually change Guardian behavior (custom
+  budget exhausts earlier/later than default 3; auto-close honors a custom short
+  window); end-to-end breach driven through `FleetControl.tick()`.
+- `alerting/rules`: data-driven alert policy + `validateAlertRules()` (happy path
+  and negative: non-array, missing fields, unknown severity, null element).
 - `fleet-control`: **protected-pane refusals** (inject returns ok:false, enqueue
   throws), classified states, task→pump→inject, WS fan-out, STUCK→breaker path,
   **no duplicate `breaker_tripped` broadcast**.
 - `control-plane`: real Fastify server incl. SSE, 403 for protected dispatch,
   `/api/fleet` + `/api/agents/:id/history` + `/api/events` + `/api/event-log` filters.
+- `server/event-log` + `server/event-log-export` (**B9**): structured, filterable,
+  sanitized NDJSON export (empty / limit / filtered / no internal fields leaked).
 - `tui`: render model, input parse, dispatch, selection/breaker reset, mount guard,
   **grouped live/stale/breaker/protected sections + heartbeat-age suffix**.
+- `driver/capture-retry` (**new, B10**): poller `capturePane` retry/backoff with
+  injected transient failures — escalating backoff (+ jitter), exhaust-then-throw.
 - `demo`: full-stack scenario with mock tmux.
 - `test/mock-fleet.integration`: deterministic mock-fleet harness covering normal
   operation, missed-heartbeat→breaker, auto-close, restart recovery, history replay.
