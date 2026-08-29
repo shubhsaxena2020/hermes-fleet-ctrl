@@ -135,14 +135,16 @@ journalctl --user -u fleet-ctrl -f
 | `FLEET_ALLOW_NUDGE` | `0` | `1` to enable safe STUCK nudges |
 | `FLEET_PROTECTED` | _(none)_ | extra comma-separated pane targets to protect |
 | `FLEET_AGENT_PATTERN` | `hermes` | regex to detect hermes panes in `list-panes` |
+| `FLEET_MAX_RESTARTS` | `3` | nudge budget per rolling window (breaker opens when exhausted) |
+| `FLEET_RESTART_WINDOW_MS` | `3600000` (1h) | rolling window for the nudge budget; also the auto-close drain window |
 
 **Circuit-breaker knobs** (validated by the config schema, T12 — see `src/config/schema.ts`):
 
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `stuckAfterMs` | `600000` (env `FLEET_STUCK_MS`) | idle ⇒ STUCK threshold (ms) |
-| `maxRestartsPerWindow` | `3` | nudge budget per rolling window (breaker opens when exhausted) |
-| `restartWindowMs` | `3600000` (1h) | rolling window for the restart budget; also the auto-close drain window |
+| `maxRestartsPerWindow` | `3` (env `FLEET_MAX_RESTARTS`) | nudge budget per rolling window (breaker opens when exhausted) |
+| `restartWindowMs` | `3600000` (env `FLEET_RESTART_WINDOW_MS`, 1h) | rolling window for the restart budget; also the auto-close drain window |
 | `pollIntervalMs` | `2000` | fleet poll loop interval (ms) |
 | `slots` | `7` | goal-dispatch concurrency slots |
 
