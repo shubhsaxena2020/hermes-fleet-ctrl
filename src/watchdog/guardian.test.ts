@@ -212,5 +212,94 @@ describe('Guardian — circuit breaker auto-close (issue #1 regression)', () => 
     expect(g.status('p')).toBe('OK');
     // and a healthy, recently-active pane is not restarted.
     expect(g.evaluate('p')).toBe('none');
-  });
-});
+    });
+    });
+
+    describe('Guardian — idempotent heartbeat reopen (T5)', () => {
+    function tripWith(g: Guardian, clock: { v: number }): void {
+      for (let i = 0; i < 3; i++) {
+        clock.v += 2000;
+        g.evaluate('p');
+      }
+      clock.v += 2000;
+      g.evaluate('p'); // trips -> onTransition(open)
+    }
+
+    it('emits exactly one transition per state change via onTransition', () => {
+      const clock = { v: 1_000_000 };
+      const transitions: string[] = [];
+      const g = new Guardian({
+        stuckAfterMs: 1000,
+        maxRestartsPerWindow: 3,
+        windowMs: 60 * 60 * 1000,
+        now: () => clock.v,
+        onTransition: (e) => transitions.push(`${e.from}->${e.to}:${e.reason}`),
+      });
+      g.register('p');
+      tripWith(g, clock);
+      expect(transitions).toEqual(['closed->open:restart_budget_exhausted']);
+
+      // Window drains + heartbeat -> exactly one auto-close transition.
+      clock.v += 60 * 60 * 1000 + 1000;
+      g.activity('p', clock.v);
+      g.status('p');
+      expect(transitions).toEqual([
+        'closed->open:restart_budget_exhausted',
+        'open->closed:auto_close_window_drained_heartbeat',
+      ]);
+    });
+
+    it('a duplicate heartbeat does NOT double-transition (idempotent reopen)', () => {
+      const clock = { v: 1_000_000 };
+      const transitions: string[] = [];
+      const g = new Guardian({
+        stuckAfterMs: 1000,
+        maxRestartsPerWindow: 3,
+        windowMs: 60 * 60 * 1000,
+        now: () => clock.v,
+        onTransition: (e) => transitions.push(`${e.from}->${e.to}`),
+      });
+      g.register('p');
+      tripWith(g, clock);
+
+      // Window drains.
+      clock.v += 60 * 60 * 1000 + 1000;
+
+      // Multiple heartbeats arrive (e.g. several snapshots) — only one reopen.
+      g.activity('p', clock.v);
+      g.activity('p', clock.v);
+      g.activity('p', clock.v);
+      g.status('p'); // open -> closed (consumes the single heartbeat flag)
+      g.status('p'); // already closed -> no transition
+
+      // Calling status() again with no new heartbeat must NOT reopen (no-op path).
+      g.status('p');
+      expect(transitions).toEqual(['closed->open', 'open->closed']);
+    });
+
+    it('operator reset only fires when actually open, and is idempotent', () => {
+      const clock = { v: 1_000_000 };
+      const transitions: string[] = [];
+      const g = new Guardian({
+        stuckAfterMs: 1000,
+        maxRestartsPerWindow: 3,
+        windowMs: 60 * 60 * 1000,
+        now: () => clock.v,
+        onTransition: (e) => transitions.push(`${e.from}->${e.to}:${e.reason}`),
+      });
+      g.register('p');
+      // Reset on a closed breaker is a no-op (no transition).
+      g.resetBreaker('p');
+      expect(transitions).toHaveLength(0);
+
+      tripWith(g, clock);
+      expect(transitions).toEqual(['closed->open:restart_budget_exhausted']);
+      // Double reset emits exactly one transition (idempotent).
+      g.resetBreaker('p');
+      g.resetBreaker('p');
+      expect(transitions).toEqual([
+        'closed->open:restart_budget_exhausted',
+        'open->closed:operator_reset',
+      ]);
+    });
+    });

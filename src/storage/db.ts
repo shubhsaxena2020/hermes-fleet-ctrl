@@ -68,6 +68,17 @@ export interface AuditLogRow {
   detail?: string | null;
 }
 
+export type BreakerEventKind = 'open' | 'close' | 'auto_close';
+
+export interface BreakerEventRow {
+  id?: number;
+  agent_id: string;
+  pane_id?: string | null;
+  kind: BreakerEventKind;
+  reason: string;
+  at?: number;
+}
+
 export interface JournalOptions {
   /** Filesystem path; pass ':memory:' (default) for an in-memory DB. */
   path?: string;
@@ -132,6 +143,16 @@ CREATE TABLE IF NOT EXISTS audit_log (
   detail       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts);
+
+CREATE TABLE IF NOT EXISTS breaker_events (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id     TEXT NOT NULL,
+  pane_id      TEXT,
+  kind         TEXT NOT NULL,
+  reason       TEXT NOT NULL,
+  at           INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
+);
+CREATE INDEX IF NOT EXISTS idx_breaker_agent ON breaker_events(agent_id, id);
 `;
 
 export class EventJournal {
@@ -244,6 +265,53 @@ export class EventJournal {
       detail: row.detail ?? null,
     });
     return Number(info.lastInsertRowid);
+  }
+
+  /**
+   * Append a durable circuit-breaker transition record. The breaker event log
+   * is the source of truth for breaker open/close state across process restarts;
+   * `reconstructBreakerState()` rebuilds the current breaker state from it.
+   */
+  insertBreakerEvent(row: BreakerEventRow): number {
+    const stmt = this.db.prepare(
+      `INSERT INTO breaker_events (agent_id, pane_id, kind, reason, at)
+       VALUES (@agent_id, @pane_id, @kind, @reason, @at)`,
+    );
+    const info = stmt.run({
+      agent_id: row.agent_id,
+      pane_id: row.pane_id ?? null,
+      kind: row.kind,
+      reason: row.reason,
+      at: row.at ?? Date.now(),
+    });
+    return Number(info.lastInsertRowid);
+  }
+
+  /** Recent breaker events, optionally filtered by agent (newest first). */
+  recentBreakerEvents(agentId?: string, limit = 50): BreakerEventRow[] {
+    const rows = agentId
+      ? this.db
+          .prepare(`SELECT id, agent_id, pane_id, kind, reason, at FROM breaker_events WHERE agent_id = ? ORDER BY id DESC LIMIT ?`)
+          .all(agentId, limit)
+      : this.db
+          .prepare(`SELECT id, agent_id, pane_id, kind, reason, at FROM breaker_events ORDER BY id DESC LIMIT ?`)
+          .all(limit);
+    return rows as BreakerEventRow[];
+  }
+
+  /**
+   * Reconstruct the current breaker state for an agent from its durable event
+   * log. An `open` event means the breaker is currently open; `close` /
+   * `auto_close` means it is closed. No event => closed (default-safe). This is
+   * what makes breaker state traceable after a process restart: open a journal
+   * on the same on-disk file and the read model is rebuilt deterministically.
+   */
+  reconstructBreakerState(agentId: string): 'open' | 'closed' {
+    const row = this.db
+      .prepare(`SELECT kind FROM breaker_events WHERE agent_id = ? ORDER BY id DESC LIMIT 1`)
+      .get(agentId) as { kind: BreakerEventKind } | undefined;
+    if (!row) return 'closed';
+    return row.kind === 'open' ? 'open' : 'closed';
   }
 
   /**

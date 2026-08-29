@@ -130,3 +130,35 @@ describe('EventJournal — write throughput (>1000 events/sec)', () => {
     expect(perSec, `throughput ${perSec.toFixed(0)}/s < 1000/s`).toBeGreaterThan(1000);
   });
 });
+
+describe('EventJournal — durable circuit-breaker event record (T4)', () => {
+  it('records open/close/auto_close transitions and reconstructs current state', () => {
+    const j = makeJournal();
+    expect(j.reconstructBreakerState('agent-1')).toBe('closed'); // default-safe
+    j.insertBreakerEvent({ agent_id: 'agent-1', pane_id: '1.0', kind: 'open', reason: 'restart_budget_exhausted', at: 1000 });
+    expect(j.reconstructBreakerState('agent-1')).toBe('open');
+    j.insertBreakerEvent({ agent_id: 'agent-1', pane_id: '1.0', kind: 'auto_close', reason: 'auto_close_window_drained_heartbeat', at: 2000 });
+    expect(j.reconstructBreakerState('agent-1')).toBe('closed');
+    const recent = j.recentBreakerEvents('agent-1', 10);
+    expect(recent).toHaveLength(2);
+    expect(recent[0]?.kind).toBe('auto_close'); // newest first
+  });
+
+  it('replay survives a process restart (new journal on the same on-disk file)', () => {
+    const file = makeTempDb();
+    const writer = makeJournal(file);
+    writer.insertBreakerEvent({ agent_id: 'agent-9', pane_id: '1.5', kind: 'open', reason: 'restart_budget_exhausted', at: 5000 });
+    writer.insertBreakerEvent({ agent_id: 'agent-9', pane_id: '1.5', kind: 'auto_close', reason: 'auto_close_window_drained_heartbeat', at: 9000 });
+    writer.close(); // "process exits"
+
+    // A fresh journal opens the SAME file and rebuilds the read model.
+    const reader = makeJournal(file);
+    expect(reader.reconstructBreakerState('agent-9')).toBe('closed');
+    const events = reader.recentBreakerEvents('agent-9');
+    expect(events).toHaveLength(2);
+    expect(events[1]?.kind).toBe('open'); // oldest first in array order
+    // And a brand-new open after restart is appended, flipping state to open.
+    reader.insertBreakerEvent({ agent_id: 'agent-9', pane_id: '1.5', kind: 'open', reason: 'restart_budget_exhausted', at: 12000 });
+    expect(reader.reconstructBreakerState('agent-9')).toBe('open');
+  });
+});
