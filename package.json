@@ -19,14 +19,15 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "blessed": "^0.1.81",
-    "better-sqlite3": "^11.3.0",
-    "fastify": "^4.28.1",
     "@fastify/websocket": "^8.3.1",
+    "better-sqlite3": "^11.3.0",
+    "blessed": "^0.1.81",
+    "fastify": "^4.28.1",
     "node-pty": "^1.0.0",
     "ssh2": "^1.15.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/blessed": "^0.1.25",
     "@types/node": "^20.14.0",
     "@types/ssh2": "^1.15.1",
