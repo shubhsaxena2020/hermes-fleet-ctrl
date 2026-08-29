@@ -187,6 +187,42 @@ describe('Control-plane integration (real Fastify + FleetControl, mock tmux)', (
     expect(events.some((e) => e.type === 'snapshot')).toBe(true);
   });
 
+  it('SSE /stream/sse delivers breaker open transitions live (T8)', async () => {
+    const frames: FleetEvent[] = [];
+    const res = await fetch(`${base}/stream/sse`);
+    const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    const tickOnce = () => {
+      clock += 2000;
+      void fleet.tick();
+    };
+
+    // Trip the breaker on agent-1 (re-freeze the wedged screen each cycle).
+    fleet.guardian.resetBreaker('agent-1');
+    transport.setScreen('agent-1', '0.0', '⠿ wedged for SSE');
+    const collect = async () => {
+      for (let i = 0; i < 6; i++) {
+        tickOnce();
+        transport.setScreen('agent-1', '0.0', '⠿ wedged for SSE');
+        // read any available chunks without blocking long
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        for (const line of buf.split('\n')) {
+          const m = line.match(/^data: (.+)$/);
+          if (m) frames.push(JSON.parse(m[1]!) as FleetEvent);
+        }
+        buf = buf.split('\n').pop() ?? '';
+      }
+    };
+    await collect();
+    await reader.cancel();
+
+    // The live SSE feed must have carried the breaker_tripped transition.
+    expect(frames.some((e) => e.type === 'guardian' && e.action === 'breaker_tripped')).toBe(true);
+  });
+
   it('ticks detect STUCK then drive the guardian restart budget + breaker (circuit-breaker path)', async () => {
     // Freeze agent-1's screen while it is in a "thinking" (active) state so it
     // never produces new output; advance time past stuckAfterMs each tick.
