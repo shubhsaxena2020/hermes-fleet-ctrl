@@ -75,12 +75,12 @@ function makeFleet(transport: FakeFleetTransport, now: () => number) {
 }
 
 let clock = 1_000_000;
+let fleet: FleetControl;
+let transport: FakeFleetTransport;
+let base: string;
 
 describe('Control-plane integration (real Fastify + FleetControl, mock tmux)', () => {
-  let fleet: FleetControl;
-  let transport: FakeFleetTransport;
   let app: FastifyInstance;
-  let base: string;
 
   beforeAll(async () => {
     transport = new FakeFleetTransport();
@@ -209,5 +209,82 @@ describe('Control-plane integration (real Fastify + FleetControl, mock tmux)', (
     const restarted = restarts.filter((e) => e.type === 'guardian' && e.action === 'restarted');
     expect(restarted.length).toBe(3);
     expect(fleet.agentViews().find((a) => a.agentId === 'agent-1')?.breakerOpen).toBe(true);
+  });
+});
+
+describe('Control-plane — defined REST status API (T7)', () => {
+  let app2: FastifyInstance;
+  let base2: string;
+
+  beforeAll(async () => {
+    // Spin up a dedicated server for the existing module-level `fleet` (the first
+    // describe's server is closed in its own afterAll).
+    app2 = await createControlPlane(fleet, { pollIntervalMs: 0 });
+    await app2.listen({ port: 0, host: '127.0.0.1' });
+    const addr = app2.server.address() as AddressInfo;
+    base2 = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterAll(async () => {
+    await app2.close();
+  });
+
+  it('GET /api/fleet returns a stable summary shape', async () => {
+    const res = await fetch(`${base2}/api/fleet`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      generatedAt: number;
+      total: number;
+      byStatus: { ok: number; stuck: number; breakerOpen: number; protected: number };
+      agents: Array<{ agentId: string; breakerState: 'open' | 'closed' }>;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.total).toBe(2);
+    expect(body.byStatus).toBeDefined();
+    // breakerState is now part of the per-agent detail shape.
+    expect(body.agents[0]?.breakerState).toBeDefined();
+  });
+
+  it('GET /api/agents/:id returns 404 for unknown agent', async () => {
+    const res = await fetch(`${base2}/api/agents/nope`);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('unknown agent');
+  });
+
+  it('GET /api/agents/:id/history returns bounded metrics history', async () => {
+    clock += 10;
+    await fleet.tick(); // produces a metrics sample
+    const res = await fetch(`${base2}/api/agents/agent-1/history?limit=10`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { agentId: string; history: Array<{ agent_id: string }> };
+    expect(body.agentId).toBe('agent-1');
+    expect(Array.isArray(body.history)).toBe(true);
+    expect(body.history.length).toBeGreaterThan(0);
+  });
+
+  it('GET /api/events returns durable breaker events', async () => {
+    const res = await fetch(`${base2}/api/events?limit=50`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { events: Array<{ kind: string; agent_id: string }> };
+    // agent-1 was tripped in the previous test, so at least one open event exists.
+    expect(body.events.some((e) => e.kind === 'open' && e.agent_id === 'agent-1')).toBe(true);
+  });
+
+  it('empty-fleet endpoints still return valid shapes (no agents)', async () => {
+    const empty = new FleetControl(new FakeFleetTransport(), new EventJournal(), {}, { stuckAfterMs: 1000, now: () => clock });
+    const appEmpty = await createControlPlane(empty, { pollIntervalMs: 0 });
+    await appEmpty.listen({ port: 0, host: '127.0.0.1' });
+    const addr = appEmpty.server.address() as AddressInfo;
+    const b3 = `http://127.0.0.1:${addr.port}`;
+    const fleetRes = await fetch(`${b3}/api/fleet`);
+    const fb = (await fleetRes.json()) as { total: number; byStatus: Record<string, number> };
+    expect(fb.total).toBe(0);
+    expect(fb.byStatus.breakerOpen).toBe(0);
+    const evRes = await fetch(`${b3}/api/events`);
+    const eb = (await evRes.json()) as { events: unknown[] };
+    expect(eb.events).toEqual([]);
+    await appEmpty.close();
   });
 });

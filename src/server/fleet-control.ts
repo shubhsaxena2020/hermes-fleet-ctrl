@@ -61,6 +61,8 @@ export interface AgentView {
   lastNormalized: string;
   stuck: boolean;
   breakerOpen: boolean;
+  /** Durable breaker state reconstructed from the event log ('open' | 'closed'). */
+  breakerState: 'open' | 'closed';
   restartsInWindow: number;
   /** True if this pane is protected (never auto-nudged / never accepts dispatch). */
   protected: boolean;
@@ -95,6 +97,7 @@ export class FleetControl extends EventEmitter {
   private readonly lastNormalized = new Map<string, string>();
   private readonly lastState = new Map<string, AgentState>();
   private timer: ReturnType<typeof setInterval> | undefined;
+  private readonly lastHeartbeatAt = new Map<string, number>();
 
   constructor(
     transport: TmuxTransport,
@@ -174,7 +177,10 @@ export class FleetControl extends EventEmitter {
       // thinking/running screen) does NOT refresh the guardian timer, so a wedged
       // agent that stopped producing output is eventually declared STUCK.
       const alive = changed || state === AgentState.IDLE;
-      if (alive) this.guardian.activity(agentId);
+      if (alive) {
+        this.guardian.activity(agentId);
+        this.lastHeartbeatAt.set(agentId, now);
+      }
 
       const action = this.guardian.evaluate(agentId);
       if (action === 'restarted') {
@@ -185,6 +191,18 @@ export class FleetControl extends EventEmitter {
       }
 
       this.publish({ type: 'snapshot', ts: now, agentId, state, normalized, changed });
+
+      // Record a bounded metrics sample for trendlines (T6). Captured every poll
+      // cycle; the journal prunes beyond the per-agent cap so history stays small.
+      const lastHb = this.lastHeartbeatAt.get(agentId) ?? now;
+      this.journal.insertMetricsSample({
+        agent_id: agentId,
+        captured_at: now,
+        queue_depth: this.engine.snapshot().length,
+        heartbeat_age_ms: Math.max(0, now - lastHb),
+        restart_count: this.guardian.restartCount(agentId),
+        poll_latency_ms: 0,
+      });
     }
   }
 
@@ -294,7 +312,7 @@ export class FleetControl extends EventEmitter {
     return rows;
   }
 
-  /** Current per-agent view (state, stuck, breaker). */
+  /** Current per-agent view (state, stuck, breaker, durable breaker state). */
   agentViews(): AgentView[] {
     return [...this.agents.keys()].map((agentId) => ({
       agentId,
@@ -302,9 +320,20 @@ export class FleetControl extends EventEmitter {
       lastNormalized: this.lastNormalized.get(agentId) ?? '',
       stuck: this.guardian.status(agentId) === 'STUCK',
       breakerOpen: this.guardian.status(agentId) === 'BREAKER_OPEN',
+      breakerState: this.journal.reconstructBreakerState(agentId),
       restartsInWindow: this.guardian.restartCount(agentId),
       protected: this.protectedIds.has(agentId),
     }));
+  }
+
+  /** Bounded metrics history for an agent (newest first). */
+  recentMetrics(agentId: string, limit = 60) {
+    return this.journal.recentMetrics(agentId, limit);
+  }
+
+  /** Recent durable breaker events (newest first). */
+  recentBreakerEvents(agentId?: string, limit = 50) {
+    return this.journal.recentBreakerEvents(agentId, limit);
   }
 
   /** Begin the poll loop on a fixed interval (real timers). */
