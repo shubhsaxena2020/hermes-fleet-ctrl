@@ -3,6 +3,26 @@
 All notable changes to hermes-fleet-ctrl are documented here. Releases are
 tagged `vX.Y.Z` on GitHub; each release has a matching GitHub Release.
 
+## [v0.3.3] — 2026-08-29
+
+Phase B of BACKLOG.md: coverage & hardening (130 → 151 tests).
+
+- **B5/B6** (guardian-knobs): prove the restart-budget knobs
+  (`FLEET_MAX_RESTARTS` / `FLEET_RESTART_WINDOW_MS`) actually change Guardian
+  behavior — custom budget exhausts earlier/later than the default 3, and
+  auto-close honors a custom short window. End-to-end breach driven through
+  `FleetControl.tick()` at a configured budget with a durable `open` event.
+- **B7** (metrics-persistence): metrics + breaker/audit events survive a
+  close/reopen cycle on a real on-disk SQLite file (WAL durability).
+- **B8** (alert rules): new `validateAlertRules()` pure validator; covers happy
+  path + negatives (non-array, missing fields, unknown severity, null element).
+- **B9** (event-log export): NDJSON export empty / limit / filtered /
+  sanitized (no internal fields leaked).
+- **B10** (poller retry): `capturePane` retry/backoff with injected transient
+  failures — escalating backoff (+ jitter), exhaust-then-throw.
+
+CI (Phase A) gates every push/PR on Node 20/22.
+
 ## [v0.3.2-ci] — 2026-08-29
 
 Phase A of BACKLOG.md: CI, plus a latent defect it exposed.
