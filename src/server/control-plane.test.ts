@@ -323,4 +323,19 @@ describe('Control-plane — defined REST status API (T7)', () => {
     expect(eb.events).toEqual([]);
     await appEmpty.close();
   });
+
+  it('data-driven alerts fire as live events when a breaker opens (T9)', async () => {
+    const alerts: Array<{ agentId: string; severity: string; ruleId: string }> = [];
+    fleet.on('alert', (e: FleetEvent) => {
+      if (e.type === 'alert') alerts.push({ agentId: e.agentId, severity: e.severity, ruleId: e.ruleId });
+    });
+    fleet.guardian.resetBreaker('agent-1');
+    transport.setScreen('agent-1', '0.0', '⠿ wedged for alert test');
+    for (let i = 0; i < 5; i++) {
+      clock += 2000;
+      await fleet.tick();
+      transport.setScreen('agent-1', '0.0', '⠿ wedged for alert test');
+    }
+    expect(alerts.some((a) => a.agentId === 'agent-1' && a.ruleId === 'breaker-open' && a.severity === 'critical')).toBe(true);
+  });
 });
