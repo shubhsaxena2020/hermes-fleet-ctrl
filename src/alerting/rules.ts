@@ -51,7 +51,9 @@ export interface FiredAlert {
 function render(template: string, input: AlertInput): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_m, key: string) => {
     const v = (input as unknown as Record<string, unknown>)[key];
-    return v === undefined ? '' : String(v);
+    if (v === undefined) return '';
+    // eslint-disable-next-line @typescript-eslint/no-base-to-string
+    return String(v);
   });
 }
 
