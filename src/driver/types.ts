@@ -84,4 +84,8 @@ export interface TmuxPoolOptions {
   commandTimeoutMs?: number;
   /** Scheduler for backoff; defaults to a real setTimeout-based delay. */
   delayFn?: DelayFn;
+  /** Capture retry: attempts before giving up (default 3). */
+  captureRetries?: number;
+  /** Capture retry base backoff (ms). */
+  captureBaseBackoffMs?: number;
 }

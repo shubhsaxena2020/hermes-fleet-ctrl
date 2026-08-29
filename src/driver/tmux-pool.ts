@@ -176,6 +176,9 @@ export class TmuxPool {
   private readonly maxRetries: number;
   private readonly commandTimeoutMs: number;
   private readonly delayFn: DelayFn;
+  /** Capture retry configuration (T10). */
+  private readonly captureRetries: number;
+  private readonly captureBaseBackoffMs: number;
 
   constructor(options: TmuxPoolOptions = {}) {
     this.baseBackoffMs = options.baseBackoffMs ?? DEFAULT_BASE_BACKOFF_MS;
@@ -183,6 +186,8 @@ export class TmuxPool {
     this.maxRetries = options.maxRetries ?? Infinity;
     this.commandTimeoutMs = options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
     this.delayFn = options.delayFn ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    this.captureRetries = options.captureRetries ?? 3;
+    this.captureBaseBackoffMs = options.captureBaseBackoffMs ?? 200;
   }
 
   /** Register a host. If already registered, the existing connection is returned. */
@@ -219,11 +224,27 @@ export class TmuxPool {
 
   /** Capture the raw ANSI screen buffer of a pane (non-blocking over stdout). */
   async capturePane(hostId: string, target: string, opts: CaptureOptions = {}): Promise<string> {
-    const parts = ['tmux', 'capture-pane', '-p', '-e', '-t', target];
-    if (opts.start !== undefined) parts.push('-S', String(opts.start));
-    if (opts.end !== undefined) parts.push('-E', String(opts.end));
-    const out = await this.runOnHost(hostId, parts.join(' '));
-    return out.stdout;
+    const attempt = async (): Promise<string> => {
+      const parts = ['tmux', 'capture-pane', '-p', '-e', '-t', target];
+      if (opts.start !== undefined) parts.push('-S', String(opts.start));
+      if (opts.end !== undefined) parts.push('-E', String(opts.end));
+      const out = await this.runOnHost(hostId, parts.join(' '));
+      return out.stdout;
+    };
+
+    // Exponential backoff with jitter: base * 2^try + random(0,100ms)
+    for (let i = 0; i < this.captureRetries; i++) {
+      try {
+        return await attempt();
+      } catch (err) {
+        if (i === this.captureRetries - 1) throw err;
+        const base = this.captureBaseBackoffMs * (2 ** i);
+        const jitter = Math.floor(Math.random() * 100);
+        await this.delayFn(base + jitter);
+      }
+    }
+    // unreachable
+    throw new Error('capturePane retry logic error');
   }
 
   /** Run an arbitrary tmux command on a host (used by the control-plane / diagnostics). */
