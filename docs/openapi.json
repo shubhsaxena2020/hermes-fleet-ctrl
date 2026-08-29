@@ -1,0 +1,181 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Hermes Fleet Commander — Control-Plane API",
+    "version": "0.3.4",
+    "description": "REST + WebSocket/SSE control-plane API for the hermes-fleet-ctrl daemon. The `/api/*` routes are the stable contract; the legacy `/agents*` and `/tasks` routes are retained for backward compatibility. All timestamps are epoch milliseconds. Auth: none (bind to 127.0.0.1 via FLEET_HOST; front with a reverse proxy + auth if exposed)."
+  },
+  "servers": [{ "url": "http://127.0.0.1:8787", "description": "default bind (FLEET_HOST/FLEET_PORT)" }],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Liveness",
+        "responses": {
+          "200": { "description": "ok", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" } } } }
+        }
+      }
+    },
+    "/agents": {
+      "get": {
+        "summary": "All agent views",
+        "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "type": "object", "properties": { "agents": { "type": "array", "items": { "$ref": "#/components/schemas/AgentView" } } } } } } } }
+      }
+    },
+    "/agents/{id}": {
+      "get": {
+        "summary": "Single agent view",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "ok", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AgentView" } } } },
+          "404": { "description": "unknown agent", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/api/fleet": {
+      "get": {
+        "summary": "Fleet summary (counts + per-agent status)",
+        "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FleetSummary" } } } } }
+      }
+    },
+    "/api/agents/{id}": {
+      "get": {
+        "summary": "Per-agent detail + durable breaker state",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": {
+          "200": { "description": "ok", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AgentView" } } } },
+          "404": { "description": "unknown agent", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/api/agents/{id}/history": {
+      "get": {
+        "summary": "Bounded metrics history (trendlines)",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 500, "default": 60 } }
+        ],
+        "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "type": "object", "properties": { "agentId": { "type": "string" }, "history": { "type": "array", "items": { "$ref": "#/components/schemas/MetricsSample" } } } } } } } }
+      }
+    },
+    "/api/events": {
+      "get": {
+        "summary": "Durable circuit-breaker events",
+        "parameters": [
+          { "name": "agent", "in": "query", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 } }
+        ],
+        "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "type": "object", "properties": { "events": { "type": "array", "items": { "$ref": "#/components/schemas/BreakerEvent" } } } } } } } }
+      }
+    },
+    "/api/event-log": {
+      "get": {
+        "summary": "Structured operator audit log",
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 } },
+          { "name": "agent", "in": "query", "schema": { "type": "string" } },
+          { "name": "type", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "type": "object", "properties": { "eventLog": { "type": "array", "items": { "$ref": "#/components/schemas/AuditRow" } } } } } } } }
+      }
+    },
+    "/api/event-log/export.ndjson": {
+      "get": {
+        "summary": "Sanitized NDJSON export (attachment)",
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 } },
+          { "name": "agent", "in": "query", "schema": { "type": "string" } },
+          { "name": "type", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "application/x-ndjson; one JSON object per line (ts, actor, action, target, detail)", "content": { "application/x-ndjson": { "schema": { "type": "string" } } } } }
+      }
+    },
+    "/tasks": {
+      "get": { "summary": "Task queue snapshot", "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "type": "object", "properties": { "tasks": { "type": "array", "items": { "type": "object" } } } } } } } } },
+      "post": {
+        "summary": "Enqueue a goal",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["agentId", "prompt"], "properties": { "agentId": { "type": "string" }, "prompt": { "type": "string" }, "priority": { "type": "string", "enum": ["LOW", "NORMAL", "HIGH", "CRITICAL"] } } } } } },
+        "responses": {
+          "201": { "description": "enqueued", "content": { "application/json": { "schema": { "type": "object", "properties": { "taskId": { "type": "string" } } } } } },
+          "400": { "description": "missing fields", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/agents/{id}/goal": {
+      "post": {
+        "summary": "Inject a goal immediately (bypasses queue)",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["prompt"], "properties": { "prompt": { "type": "string" } } } } } },
+        "responses": {
+          "200": { "description": "injected" },
+          "400": { "description": "missing prompt", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "403": { "description": "protected pane", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "unknown agent", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/stream": { "get": { "summary": "WebSocket live FleetEvents", "responses": { "101": { "description": "switching protocols" } } } },
+    "/stream/sse": { "get": { "summary": "Server-Sent Events live FleetEvents", "responses": { "200": { "description": "text/event-stream" } } } }
+  },
+  "components": {
+    "schemas": {
+      "Health": { "type": "object", "properties": { "ok": { "type": "boolean" }, "agents": { "type": "array", "items": { "type": "string" } }, "tasks": { "type": "integer" } } },
+      "AgentView": {
+        "type": "object",
+        "properties": {
+          "agentId": { "type": "string" },
+          "state": { "type": "string", "description": "AgentState enum value" },
+          "lastNormalized": { "type": "string" },
+          "stuck": { "type": "boolean" },
+          "breakerOpen": { "type": "boolean" },
+          "breakerState": { "type": "string", "enum": ["open", "closed"] },
+          "restartsInWindow": { "type": "integer" },
+          "protected": { "type": "boolean" }
+        }
+      },
+      "FleetSummary": {
+        "type": "object",
+        "properties": {
+          "ok": { "type": "boolean" },
+          "generatedAt": { "type": "integer", "description": "epoch ms" },
+          "total": { "type": "integer" },
+          "byStatus": { "type": "object", "properties": { "ok": { "type": "integer" }, "stuck": { "type": "integer" }, "breakerOpen": { "type": "integer" }, "protected": { "type": "integer" } } },
+          "agents": { "type": "array", "items": { "$ref": "#/components/schemas/AgentView" } }
+        }
+      },
+      "MetricsSample": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "agent_id": { "type": "string" },
+          "captured_at": { "type": "integer", "description": "epoch ms" },
+          "queue_depth": { "type": "integer" },
+          "heartbeat_age_ms": { "type": "integer" },
+          "restart_count": { "type": "integer" },
+          "poll_latency_ms": { "type": "integer" }
+        }
+      },
+      "BreakerEvent": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "agent_id": { "type": "string" },
+          "pane_id": { "type": "string", "nullable": true },
+          "kind": { "type": "string", "enum": ["open", "close", "auto_close"] },
+          "reason": { "type": "string" },
+          "at": { "type": "integer", "description": "epoch ms" }
+        }
+      },
+      "AuditRow": {
+        "type": "object",
+        "properties": {
+          "ts": { "type": "integer", "description": "epoch ms" },
+          "actor": { "type": "string" },
+          "action": { "type": "string" },
+          "target": { "type": "string", "nullable": true },
+          "detail": { "type": "string", "nullable": true }
+        }
+      },
+      "Error": { "type": "object", "properties": { "error": { "type": "string" }, "agentId": { "type": "string" } } }
+    }
+  }
+}
