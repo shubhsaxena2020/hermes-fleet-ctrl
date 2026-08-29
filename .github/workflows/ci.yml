@@ -62,3 +62,33 @@ jobs:
 
       - name: Build
         run: pnpm run build
+
+  # Non-blocking: the deterministic mock-fleet integration harness (T15) runs as
+  # its own job so a flake there never reds the required gate. It is pure/in-memory
+  # (no tmux), so it does not need the tmux install step.
+  integration-mock:
+    name: Mock-fleet integration harness (non-blocking)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Run mock-fleet integration harness
+        run: pnpm exec vitest run src/test/mock-fleet.integration.test.ts
