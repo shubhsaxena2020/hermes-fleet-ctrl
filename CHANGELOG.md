@@ -3,6 +3,25 @@
 All notable changes to hermes-fleet-ctrl are documented here. Releases are
 tagged `vX.Y.Z` on GitHub; each release has a matching GitHub Release.
 
+## [v0.3.4] — 2026-08-29
+
+Phase C of BACKLOG.md: observability & docs.
+
+- **C11** (Grafana): `deploy/grafana/dashboards/fleet-ctrl.json` — dashboard
+  mirroring the rag-service style, wired to the daemon's REST/JSON path via the
+  Infinity datasource (no Prometheus exporter exists yet). Covers fleet summary,
+  agents-by-status, heartbeat age, restart-count budget, queue depth, poll
+  latency, and durable breaker events. `deploy/grafana/README.md` documents the
+  one required plugin + import steps.
+- **C12** (README): test-surface section updated to 151 tests / 25 files, mapping
+  the new Phase B test files.
+- **C13** (examples): `examples/` with a minimal watchdog env file (incl.
+  `FLEET_MAX_RESTARTS` / `FLEET_RESTART_WINDOW_MS`), a systemd user unit using
+  `EnvironmentFile`, and a copy-paste README.
+
+The dashboard JSON is JSON-validated and its selectors match the daemon's real
+response shapes; it is not rendered in a live Grafana within CI.
+
 ## [v0.3.3] — 2026-08-29
 
 Phase B of BACKLOG.md: coverage & hardening (130 → 151 tests).
