@@ -79,6 +79,17 @@ export interface BreakerEventRow {
   at?: number;
 }
 
+/** A single time-series metrics sample for one agent (used for trendlines). */
+export interface MetricsSampleRow {
+  id?: number;
+  agent_id: string;
+  captured_at?: number;
+  queue_depth: number;
+  heartbeat_age_ms: number;
+  restart_count: number;
+  poll_latency_ms: number;
+}
+
 export interface JournalOptions {
   /** Filesystem path; pass ':memory:' (default) for an in-memory DB. */
   path?: string;
@@ -153,6 +164,17 @@ CREATE TABLE IF NOT EXISTS breaker_events (
   at           INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
 );
 CREATE INDEX IF NOT EXISTS idx_breaker_agent ON breaker_events(agent_id, id);
+
+CREATE TABLE IF NOT EXISTS metrics_samples (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id     TEXT NOT NULL,
+  captured_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+  queue_depth  INTEGER NOT NULL DEFAULT 0,
+  heartbeat_age_ms INTEGER NOT NULL DEFAULT 0,
+  restart_count INTEGER NOT NULL DEFAULT 0,
+  poll_latency_ms INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_metrics_agent ON metrics_samples(agent_id, id);
 `;
 
 export class EventJournal {
@@ -312,6 +334,49 @@ export class EventJournal {
       .get(agentId) as { kind: BreakerEventKind } | undefined;
     if (!row) return 'closed';
     return row.kind === 'open' ? 'open' : 'closed';
+  }
+
+  /**
+   * Append a metrics sample for an agent and enforce a bounded per-agent history
+   * window so the dashboard stays small and predictable. `capPerAgent` keeps at
+   * most the newest N samples per agent (oldest beyond the cap are pruned in the
+   * same transaction). Returns the number of samples retained for the agent.
+   */
+  insertMetricsSample(row: MetricsSampleRow, capPerAgent = 240): number {
+    const insert = this.db.prepare(
+      `INSERT INTO metrics_samples (agent_id, captured_at, queue_depth, heartbeat_age_ms, restart_count, poll_latency_ms)
+       VALUES (@agent_id, @captured_at, @queue_depth, @heartbeat_age_ms, @restart_count, @poll_latency_ms)`,
+    );
+    const prune = this.db.prepare(
+      `DELETE FROM metrics_samples WHERE agent_id = ? AND id NOT IN (
+         SELECT id FROM metrics_samples WHERE agent_id = ? ORDER BY id DESC LIMIT ?
+       )`,
+    );
+    const tx = this.db.transaction((r: MetricsSampleRow) => {
+      insert.run({
+        agent_id: r.agent_id,
+        captured_at: r.captured_at ?? Date.now(),
+        queue_depth: r.queue_depth,
+        heartbeat_age_ms: r.heartbeat_age_ms,
+        restart_count: r.restart_count,
+        poll_latency_ms: r.poll_latency_ms,
+      });
+      prune.run(r.agent_id, r.agent_id, capPerAgent);
+    });
+    tx(row);
+    const count = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM metrics_samples WHERE agent_id = ?`)
+      .get(row.agent_id) as { n: number };
+    return count.n;
+  }
+
+  /** Recent metrics samples for an agent, newest first, capped at `limit`. */
+  recentMetrics(agentId: string, limit = 60): MetricsSampleRow[] {
+    const rows = this.db
+      .prepare(`SELECT id, agent_id, captured_at, queue_depth, heartbeat_age_ms, restart_count, poll_latency_ms
+                FROM metrics_samples WHERE agent_id = ? ORDER BY id DESC LIMIT ?`)
+      .all(agentId, limit) as MetricsSampleRow[];
+    return rows;
   }
 
   /**

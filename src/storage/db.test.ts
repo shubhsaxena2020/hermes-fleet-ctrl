@@ -162,3 +162,29 @@ describe('EventJournal — durable circuit-breaker event record (T4)', () => {
     expect(reader.reconstructBreakerState('agent-9')).toBe('open');
   });
 });
+
+describe('EventJournal — metrics history store (T6)', () => {
+  it('keeps a bounded per-agent ring buffer of samples', () => {
+    const j = makeJournal();
+    const cap = 5;
+    for (let i = 0; i < 20; i++) {
+      const retained = j.insertMetricsSample(
+        { agent_id: 'agent-3', queue_depth: i, heartbeat_age_ms: i * 10, restart_count: 0, poll_latency_ms: 1 },
+        cap,
+      );
+      expect(retained).toBeLessThanOrEqual(cap);
+    }
+    const recent = j.recentMetrics('agent-3', 100);
+    expect(recent).toHaveLength(cap); // strictly bounded
+    // newest first; the newest sample reflects the last insert (queue_depth 19)
+    expect(recent[0]?.queue_depth).toBe(19);
+  });
+
+  it('isolates history per agent', () => {
+    const j = makeJournal();
+    j.insertMetricsSample({ agent_id: 'a', queue_depth: 1, heartbeat_age_ms: 0, restart_count: 0, poll_latency_ms: 0 }, 240);
+    j.insertMetricsSample({ agent_id: 'b', queue_depth: 2, heartbeat_age_ms: 0, restart_count: 0, poll_latency_ms: 0 }, 240);
+    expect(j.recentMetrics('a')).toHaveLength(1);
+    expect(j.recentMetrics('b')[0]?.queue_depth).toBe(2);
+  });
+});

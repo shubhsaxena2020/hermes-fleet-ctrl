@@ -76,6 +76,48 @@ export async function createControlPlane(
 
   app.get('/agents', () => ({ agents: fleet.agentViews() }));
 
+  // ── Defined REST status API surface (T7) ───────────────────────────────────
+  // Stable, documented JSON schemas for dashboard + external consumers. Legacy
+  // /agents routes above are kept for backward compat; these /api routes are the
+  // contract going forward.
+
+  /** Fleet summary: counts + per-agent status in one stable shape. */
+  app.get('/api/fleet', () => {
+    const views = fleet.agentViews();
+    const summary = {
+      ok: true,
+      generatedAt: Date.now(),
+      total: views.length,
+      byStatus: {
+        ok: views.filter((a) => !a.stuck && !a.breakerOpen).length,
+        stuck: views.filter((a) => a.stuck).length,
+        breakerOpen: views.filter((a) => a.breakerOpen).length,
+        protected: views.filter((a) => a.protected).length,
+      },
+      agents: views,
+    };
+    return summary;
+  });
+
+  /** Per-agent detail (same shape as /agents/:id) plus durable breaker state. */
+  app.get<{ Params: { id: string } }>('/api/agents/:id', (req, reply) => {
+    const view = fleet.agentViews().find((a) => a.agentId === req.params.id);
+    if (!view) return reply.code(404).send({ error: 'unknown agent', agentId: req.params.id });
+    return view;
+  });
+
+  /** Bounded metrics history for an agent (trendlines). */
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>('/api/agents/:id/history', (req) => {
+    const limit = Math.min(Number.parseInt(req.query.limit ?? '60', 10) || 60, 500);
+    return { agentId: req.params.id, history: fleet.recentMetrics(req.params.id, limit) };
+  });
+
+  /** Durable circuit-breaker events (optionally filtered by agent). */
+  app.get<{ Querystring: { agent?: string; limit?: string } }>('/api/events', (req) => {
+    const limit = Math.min(Number.parseInt(req.query.limit ?? '50', 10) || 50, 500);
+    return { events: fleet.recentBreakerEvents(req.query.agent, limit) };
+  });
+
   app.get<{ Params: { id: string } }>('/agents/:id', (req, reply) => {
     const view = fleet.agentViews().find((a) => a.agentId === req.params.id);
     if (!view) return reply.code(404).send({ error: 'unknown agent', agentId: req.params.id });
