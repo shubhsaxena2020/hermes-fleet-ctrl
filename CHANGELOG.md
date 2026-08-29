@@ -3,6 +3,25 @@
 All notable changes to hermes-fleet-ctrl are documented here. Releases are
 tagged `vX.Y.Z` on GitHub; each release has a matching GitHub Release.
 
+## [v0.3.5] — 2026-08-29
+
+Phase D of BACKLOG.md: stretch items.
+
+- **D15** (CI): added a non-blocking `integration-mock` job running the
+  deterministic mock-fleet harness (`src/test/mock-fleet.integration.test.ts`)
+  via `continue-on-error`, so a flake there cannot red the required gate. It is
+  pure/in-memory, so no tmux install is needed.
+- **D16** (docs): `docs/multi-instance-coordination.md` — research note on >1
+  daemon against one fleet (double-nudge, split-brain breaker, leader-election
+  recommendation). No code change.
+- **D17** (docs): `docs/openapi.json` — OpenAPI 3.0 schema for the control-plane
+  REST + WS/SSE API (13 paths, 7 schemas), verified against `control-plane.ts`.
+- **D18** (bench): `bench/poller.bench.ts` + `docs/poller-benchmark.md` — REAL
+  measured per-tick cost vs fleet size (p99 ≈ 11 ms @10 agents, 73 ms @50,
+  167 ms @200). Lower bound; the live daemon is I/O-bound on `capture-pane`.
+
+Backlog complete: all 18 tasks (A1–A4, B5–B10, C11–C14, D15–D18) shipped.
+
 ## [v0.3.4] — 2026-08-29
 
 Phase C of BACKLOG.md: observability & docs.
