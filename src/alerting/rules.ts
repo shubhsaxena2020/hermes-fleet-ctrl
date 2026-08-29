@@ -98,3 +98,34 @@ export function evaluateAlerts(input: AlertInput, rules: AlertRule[] = DEFAULT_A
   }
   return fired;
 }
+
+const SEVERITIES: AlertSeverity[] = ['info', 'warning', 'critical'];
+
+/**
+ * Validate a list of alert rules (data-driven policy). Returns every problem
+ * found so an operator editing the rule set gets a complete picture rather than
+ * a cryptic failure at eval time. Used to fail fast when loading a custom rule
+ * file in production.
+ */
+export function validateAlertRules(rules: unknown): { ok: boolean; errors: string[] } {
+  const errors: string[] = [];
+  if (!Array.isArray(rules)) {
+    return { ok: false, errors: ['alert rules must be an array'] };
+  }
+  rules.forEach((r, i) => {
+    const where = `rules[${i}]`;
+    if (typeof r !== 'object' || r === null) {
+      errors.push(`${where} must be an object`);
+      return;
+    }
+    const rule = r as Partial<AlertRule>;
+    if (typeof rule.id !== 'string' || rule.id.length === 0) errors.push(`${where}.id must be a non-empty string`);
+    if (typeof rule.severity !== 'string' || !SEVERITIES.includes(rule.severity)) {
+      errors.push(`${where}.severity must be one of: info | warning | critical`);
+    }
+    if (typeof rule.title !== 'string' || rule.title.length === 0) errors.push(`${where}.title must be a non-empty string`);
+    if (typeof rule.message !== 'string') errors.push(`${where}.message must be a string`);
+    if (typeof rule.when !== 'function') errors.push(`${where}.when must be a function`);
+  });
+  return { ok: errors.length === 0, errors };
+}
