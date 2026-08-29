@@ -103,7 +103,7 @@ describe('Guardian — inactivity, STUCK, restart budget & circuit breaker', () 
     expect(g.evaluate('p')).toBe('restarted');
   });
 
-  it('real activity recovers the breaker (a live pane is never restarted)', () => {
+  it('a heartbeat alone does NOT recover the breaker until the window drains (issue #1)', () => {
     let clock = 1_000_000;
     let restarts = 0;
     const g = new Guardian({
@@ -125,11 +125,92 @@ describe('Guardian — inactivity, STUCK, restart budget & circuit breaker', () 
     g.evaluate('p'); // trips
     expect(g.status('p')).toBe('BREAKER_OPEN');
 
-    // Now the pane actually shows life (e.g. a snapshot arrives) -> breaker closes.
+    // A heartbeat arrives, but inside the window: breaker must STAY open and the
+    // pane must NOT be restarted (it is unwatched but protected from re-nagging).
+    clock += 30 * 60 * 1000;
     g.activity('p', clock);
-    expect(g.status('p')).toBe('OK');
-    // and a healthy, recently-active pane must NOT be restarted
+    expect(g.status('p')).toBe('BREAKER_OPEN');
     expect(g.evaluate('p')).toBe('none');
     expect(restarts).toBe(3);
+
+    // Once the window drains AND a heartbeat has arrived, the breaker auto-closes.
+    clock += 30 * 60 * 1000 + 1000;
+    expect(g.status('p')).toBe('OK');
+    expect(g.evaluate('p')).toBe('none');
+  });
+});
+
+describe('Guardian — circuit breaker auto-close (issue #1 regression)', () => {
+  // Wedge a pane exactly 3 times then trip the breaker.
+  function trip(g: Guardian, clock: { v: number }): void {
+    for (let i = 0; i < 3; i++) {
+      clock.v += 2000;
+      g.evaluate('p');
+    }
+    clock.v += 2000;
+    expect(g.evaluate('p')).toBe('breaker_tripped');
+    expect(g.status('p')).toBe('BREAKER_OPEN');
+  }
+
+  it('does NOT auto-close when the window is NOT drained, even with a fresh heartbeat', () => {
+    const clock = { v: 1_000_000 };
+    const g = new Guardian({
+      stuckAfterMs: 1000,
+      maxRestartsPerWindow: 3,
+      windowMs: 60 * 60 * 1000,
+      now: () => clock.v,
+    });
+    g.register('p');
+    trip(g, clock);
+
+    // Half the window later a heartbeat proves the pane is alive...
+    clock.v += 30 * 60 * 1000; // 30 min — window NOT drained (3 restarts still inside 1h)
+    g.activity('p', clock.v);
+
+    // ...but the breaker must STAY OPEN until the window fully drains.
+    expect(g.status('p')).toBe('BREAKER_OPEN');
+  });
+
+  it('does NOT auto-close when the window has drained but NO heartbeat arrived', () => {
+    const clock = { v: 1_000_000 };
+    const g = new Guardian({
+      stuckAfterMs: 1000,
+      maxRestartsPerWindow: 3,
+      windowMs: 60 * 60 * 1000,
+      now: () => clock.v,
+    });
+    g.register('p');
+    trip(g, clock);
+
+    // Advance past the full 1h window: restart timestamps prune away...
+    clock.v += 60 * 60 * 1000 + 1000;
+    expect(g.restartCount('p')).toBe(0);
+
+    // ...but with no heartbeat to prove liveness, the breaker stays open.
+    expect(g.status('p')).toBe('BREAKER_OPEN');
+  });
+
+  it('auto-closes ONLY when the window has drained AND a fresh heartbeat proves liveness', () => {
+    const clock = { v: 1_000_000 };
+    const g = new Guardian({
+      stuckAfterMs: 1000,
+      maxRestartsPerWindow: 3,
+      windowMs: 60 * 60 * 1000,
+      now: () => clock.v,
+    });
+    g.register('p');
+    trip(g, clock);
+
+    // Window drains.
+    clock.v += 60 * 60 * 1000 + 1000;
+    expect(g.restartCount('p')).toBe(0);
+
+    // Fresh heartbeat proves the pane is alive.
+    g.activity('p', clock.v);
+
+    // Both conditions met -> breaker auto-closes.
+    expect(g.status('p')).toBe('OK');
+    // and a healthy, recently-active pane is not restarted.
+    expect(g.evaluate('p')).toBe('none');
   });
 });

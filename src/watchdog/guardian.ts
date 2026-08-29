@@ -39,6 +39,10 @@ interface PaneState {
   lastActivity: number;
   restarts: number[]; // timestamps of restarts within the window
   breakerOpen: boolean;
+  /** When the breaker tripped (for the auto-close gate). */
+  breakerTrippedAt: number;
+  /** A fresh activity heartbeat arrived since the breaker tripped. */
+  hadHeartbeatSinceTrip: boolean;
 }
 
 export class Guardian {
@@ -70,6 +74,8 @@ export class Guardian {
       lastActivity: this.now(),
       restarts: [],
       breakerOpen: false,
+      breakerTrippedAt: 0,
+      hadHeartbeatSinceTrip: false,
     });
   }
 
@@ -81,7 +87,12 @@ export class Guardian {
       return;
     }
     p.lastActivity = at ?? this.now();
-    p.breakerOpen = false; // a live pane recovers the breaker
+    // A heartbeat while the breaker is OPEN records liveness but does NOT by
+    // itself recover the pane. The breaker may only auto-close once the rolling
+    // restart window has fully drained AND a fresh heartbeat proves liveness
+    // (see status()). This prevents a single stray keystroke from instantly
+    // un-protecting a pane that is still inside its cooldown window.
+    if (p.breakerOpen) p.hadHeartbeatSinceTrip = true;
   }
 
   /** Drop a pane from monitoring (agent retired). */
@@ -98,7 +109,22 @@ export class Guardian {
   status(paneKey: string): PaneStatus {
     const p = this.panes.get(paneKey);
     if (!p) return 'OK';
-    if (p.breakerOpen) return 'BREAKER_OPEN';
+    if (p.breakerOpen) {
+      // Auto-close gate (issue #1): the breaker may only recover once BOTH
+      // conditions hold — (a) the rolling restart window has fully drained
+      // (no restart timestamps remain inside windowMs) and (b) a fresh activity
+      // heartbeat has arrived since the trip, proving the pane is actually alive.
+      // Until then the pane stays unwatched but is never re-nudged, so a wedged
+      // agent cannot be hammer-looped and a silent pane is not falsely cleared.
+      this.pruneWindow(p, this.now());
+      if (p.restarts.length === 0 && p.hadHeartbeatSinceTrip) {
+        p.breakerOpen = false;
+        p.hadHeartbeatSinceTrip = false;
+        p.lastActivity = this.now();
+        return 'OK';
+      }
+      return 'BREAKER_OPEN';
+    }
     const idle = this.now() - p.lastActivity;
     return idle >= this.stuckAfterMs ? 'STUCK' : 'OK';
   }
@@ -121,6 +147,8 @@ export class Guardian {
     // Stuck. Do we have budget?
     if (p.restarts.length >= this.maxRestarts) {
       p.breakerOpen = true;
+      p.breakerTrippedAt = now;
+      p.hadHeartbeatSinceTrip = false;
       return 'breaker_tripped';
     }
 
@@ -143,6 +171,7 @@ export class Guardian {
     const p = this.panes.get(paneKey);
     if (p) {
       p.breakerOpen = false;
+      p.hadHeartbeatSinceTrip = false;
       p.restarts = [];
       p.lastActivity = this.now();
     }
