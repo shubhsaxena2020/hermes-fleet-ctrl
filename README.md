@@ -1,7 +1,6 @@
-# hermes-fleet-ctrl — Hermes Fleet Commander
+# hermes-fleet-ctrl — Hermes Fleet Dashboard
 
-A real-time **TUI + WebSocket/SSE control plane** for the fleet of **local
-tmux-backed Hermes Agent sessions** on this VPS. It replaces the ad-hoc SSH scripts
+A real-time **TUI + WebSocket/SSE control plane** for Hermes Fleet Dashboard, the fleet of **local tmux-backed Hermes Agent sessions** on this VPS. It replaces the ad-hoc SSH scripts
 and manual `tmux attach` inspection that were used to build/manage the dashboard,
 and is the permanent tool for monitoring, dispatching goals to, and auto-recovering
 the 7+ concurrent Hermes Agent sessions.
