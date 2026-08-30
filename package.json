@@ -3,7 +3,7 @@
   "version": "0.3.5",
   "private": true,
   "type": "module",
-  "description": "TUI + WebSocket/SSE control plane for the fleet of local tmux-backed Hermes Agent sessions on this VPS.",
+  "description": "TUI + WebSocket/SSE control plane for Hermes Fleet Dashboard, the fleet of local tmux-backed Hermes Agent sessions on this VPS.",
   "bin": {
     "fleet-ctrl": "dist/cli.js"
   },
